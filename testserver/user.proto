@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package user;
+
+option go_package = "loom/testserver/gen";
+
+import "google/protobuf/timestamp.proto";
+
+// UserService manages users in the system.
+service UserService {
+  // GetUser retrieves a user by their ID.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  // CreateUser creates a new user.
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+}
+
+// User represents a system user.
+message User {
+  string id         = 1;
+  string name       = 2;
+  string email      = 3;
+  Role   role       = 4;
+  google.protobuf.Timestamp created_at = 5;
+
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_ADMIN       = 1;
+    ROLE_EDITOR      = 2;
+    ROLE_VIEWER      = 3;
+  }
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message CreateUserRequest {
+  string name  = 1;
+  string email = 2;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}

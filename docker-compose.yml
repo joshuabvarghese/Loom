@@ -1,0 +1,73 @@
+# docker-compose.yml — Local development setup for Loom
+#
+# Usage:
+#   docker compose up              # start everything
+#   docker compose up loom-demo    # demo mode (no external backend)
+#   docker compose down
+
+version: "3.9"
+
+services:
+  # ── Demo mode — no external service needed ──────────────────────────────────
+  loom-demo:
+    image: ghcr.io/joshuabvarghese/loom:latest
+    build:
+      context: .
+      args:
+        VERSION: dev
+    ports:
+      - "9999:9999"   # gRPC proxy (point your client here)
+      - "9998:9998"   # Web Inspector
+    command: ["-demo", "-listen", ":9999", "-ui", ":9998"]
+    profiles: ["demo"]
+
+  # ── Sidecar mode — proxy to your own backend ─────────────────────────────────
+  #
+  # Bring your own backend and point Loom at it.
+  # Override BACKEND_ADDR to match your service.
+  #
+  loom:
+    image: ghcr.io/joshuabvarghese/loom:latest
+    build:
+      context: .
+      args:
+        VERSION: dev
+    ports:
+      - "9999:9999"
+      - "9998:9998"
+    environment:
+      - BACKEND_ADDR=${BACKEND_ADDR:-host.docker.internal:50051}
+    command:
+      - "-listen"
+      - ":9999"
+      - "-ui"
+      - ":9998"
+      - "-backend"
+      - "${BACKEND_ADDR:-host.docker.internal:50051}"
+    profiles: ["proxy"]
+
+  # ── Test setup — loom + local testserver ─────────────────────────────────────
+  testserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.testserver
+    ports:
+      - "50051:50051"
+    profiles: ["test"]
+
+  loom-test:
+    image: ghcr.io/joshuabvarghese/loom:latest
+    build:
+      context: .
+    ports:
+      - "9999:9999"
+      - "9998:9998"
+    depends_on: [testserver]
+    command:
+      - "-listen"
+      - ":9999"
+      - "-ui"
+      - ":9998"
+      - "-backend"
+      - "testserver:50051"
+    profiles: ["test"]

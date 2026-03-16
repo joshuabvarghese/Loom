@@ -1,4 +1,3 @@
-// testserver is a minimal gRPC backend with reflection enabled.
 // Use it to test Loom locally.
 //
 // Terminal 1: go run ./testserver

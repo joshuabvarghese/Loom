@@ -1,0 +1,13 @@
+# Dockerfile.testserver — builds the standalone test gRPC server
+FROM golang:1.22-alpine AS builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o testserver ./testserver
+
+FROM scratch
+COPY --from=builder /build/testserver /testserver
+EXPOSE 50051
+ENTRYPOINT ["/testserver"]
+CMD ["-addr", ":50051"]

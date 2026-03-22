@@ -1,0 +1,188 @@
+# deploy/kubernetes/sidecar.yaml
+#
+# Production-grade sidecar manifest with:
+#   - liveness + readiness probes via the admin server
+#   - resource requests/limits sized for a debug tool
+#   - full securityContext (non-root, read-only fs, dropped caps)
+#   - PodDisruptionBudget so rolling restarts don't drop the inspector
+#   - NetworkPolicy locking down egress to the app port only
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service
+  labels:
+    app: my-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-service
+  template:
+    metadata:
+      labels:
+        app: my-service
+        loom.dev/inspector: "true"
+      annotations:
+        # Prometheus auto-discovery — scrape the admin port for metrics
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9997"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Give in-flight RPCs time to finish before the pod is killed.
+      # Must be >= loom's -shutdown-timeout flag.
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        # ── Your application ─────────────────────────────────────────────────
+        - name: app
+          image: your-image:latest
+          ports:
+            - containerPort: 50051
+              name: grpc
+
+        # ── Loom sidecar ──────────────────────────────────────────────────────
+        - name: loom
+          image: ghcr.io/joshuabvarghese/loom:latest
+          args:
+            - "-backend=localhost:50051"
+            - "-listen=:9999"
+            - "-ui=:9998"
+            - "-admin=:9997"
+            - "-log-format=json"
+            - "-session=$(POD_NAME)"
+            - "-shutdown-timeout=20s"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - containerPort: 9999
+              name: loom-proxy
+            - containerPort: 9998
+              name: loom-ui
+            - containerPort: 9997
+              name: loom-admin
+
+          # Kubernetes uses /readyz to decide when to send traffic and
+          # /healthz to decide when to restart the container.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: loom-admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: loom-admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+            timeoutSeconds: 2
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: loom-admin
+            # Give Loom up to 30s to connect to the backend on slow cold starts
+            failureThreshold: 10
+            periodSeconds: 3
+
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "48Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+          # Loom writes sessions to ~/.loom — mount an emptyDir so it has a
+          # writable location even with readOnlyRootFilesystem: true.
+          volumeMounts:
+            - name: loom-sessions
+              mountPath: /home/nonroot/.loom
+
+      volumes:
+        - name: loom-sessions
+          emptyDir: {}   # swap for a PVC to persist sessions across restarts
+
+---
+# PodDisruptionBudget ensures at least one replica is always available
+# during voluntary disruptions (node drains, rolling updates).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-service-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: my-service
+
+---
+# Service to reach the Web Inspector from inside the cluster.
+# Port-forward this to your laptop: kubectl port-forward svc/my-service-loom 9998
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service-loom
+  labels:
+    app: my-service
+    component: loom-debug
+spec:
+  selector:
+    app: my-service
+    loom.dev/inspector: "true"
+  ports:
+    - name: ui
+      port: 9998
+      targetPort: loom-ui
+    - name: admin
+      port: 9997
+      targetPort: loom-admin
+  type: ClusterIP
+
+---
+# NetworkPolicy: Loom only needs to reach the app on localhost (same pod,
+# so no network policy needed for that) and egress to kube-dns for any
+# hostname resolution. Block everything else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loom-sidecar-netpol
+spec:
+  podSelector:
+    matchLabels:
+      loom.dev/inspector: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow the Web Inspector and admin port from within the cluster only.
+    - ports:
+        - port: 9998
+        - port: 9997
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # gRPC proxy outbound — only to the app on the same pod (localhost),
+    # but NetworkPolicy doesn't apply to loopback; this covers pod-to-pod
+    # scenarios if the backend is in a different pod.
+    - ports:
+        - port: 50051

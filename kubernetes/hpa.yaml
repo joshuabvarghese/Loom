@@ -1,0 +1,49 @@
+# deploy/kubernetes/hpa.yaml
+#
+# HorizontalPodAutoscaler for the application pod (not Loom itself —
+# Loom is a sidecar that scales with the app automatically).
+#
+# Scales based on CPU utilisation and a custom metric: gRPC error rate.
+# The custom metric requires the Prometheus Adapter to be installed.
+# See: https://github.com/kubernetes-sigs/prometheus-adapter
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: my-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: my-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Scale up when the gRPC error rate through Loom exceeds 5%.
+    # This requires prometheus-adapter configured with this custom metric.
+    - type: Pods
+      pods:
+        metric:
+          name: loom_grpc_error_rate
+        target:
+          type: AverageValue
+          averageValue: "0.05"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300  # wait 5m before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

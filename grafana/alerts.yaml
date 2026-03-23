@@ -1,0 +1,93 @@
+# deploy/grafana/alerts.yaml
+#
+# Prometheus alerting rules for Loom. Import into your Prometheus instance
+# or a Prometheus Operator PrometheusRule CRD.
+#
+# Runbook links point to docs/runbooks/ — update the base URL to match
+# your internal documentation host.
+
+groups:
+  - name: loom.rules
+    interval: 30s
+    rules:
+
+      # ── RED: High error rate ────────────────────────────────────────────────
+      # Fires when more than 5% of proxied RPCs are failing. This usually means
+      # the backend is returning errors, not Loom itself.
+      - alert: LoomHighGRPCErrorRate
+        expr: |
+          (
+            sum(rate(loom_calls_total{status_code!="0"}[5m]))
+            /
+            sum(rate(loom_calls_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loom is seeing >5% gRPC error rate"
+          description: >
+            {{ $value | humanizePercentage }} of proxied RPCs are failing
+            (threshold: 5%). Check backend health.
+          runbook: "https://docs.internal/runbooks/loom/high-error-rate"
+
+      - alert: LoomCriticalGRPCErrorRate
+        expr: |
+          (
+            sum(rate(loom_calls_total{status_code!="0"}[5m]))
+            /
+            sum(rate(loom_calls_total[5m]))
+          ) > 0.20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Loom is seeing >20% gRPC error rate"
+          description: >
+            {{ $value | humanizePercentage }} of proxied RPCs are failing.
+            Backend may be down or severely degraded.
+          runbook: "https://docs.internal/runbooks/loom/high-error-rate"
+
+      # ── YELLOW: High latency ─────────────────────────────────────────────────
+      - alert: LoomHighP99Latency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(loom_call_duration_seconds_bucket[5m])) by (le, method)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loom p99 latency >5s on {{ $labels.method }}"
+          description: >
+            p99 latency for {{ $labels.method }} is {{ $value | humanizeDuration }}.
+            This may indicate backend slowness or large payloads.
+          runbook: "https://docs.internal/runbooks/loom/high-latency"
+
+      # ── Storage write errors ─────────────────────────────────────────────────
+      # Even a single storage error warrants investigation — it means session
+      # history is being silently lost.
+      - alert: LoomStorageWriteErrors
+        expr: increase(loom_storage_write_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loom session storage write errors detected"
+          description: >
+            {{ $value }} session write error(s) in the last 5 minutes.
+            Check disk space and file permissions in LOOM_DATA_DIR.
+          runbook: "https://docs.internal/runbooks/loom/storage-errors"
+
+      # ── Loom process not running ─────────────────────────────────────────────
+      - alert: LoomDown
+        expr: absent(loom_build_info)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Loom proxy is not running"
+          description: >
+            No loom_build_info metric found. The Loom process may have crashed
+            or the scrape target is unreachable.
+          runbook: "https://docs.internal/runbooks/loom/process-down"

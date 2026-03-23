@@ -1,0 +1,179 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "title": "Loom — gRPC Proxy",
+  "uid": "loom-grpc-proxy",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "method",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(loom_calls_total, method)",
+        "label": "Method",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(loom_calls_total{method=~\"$method\"}[2m])) by (method)",
+          "legendFormat": "{{method}}",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error Rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(loom_calls_total{status_code!=\"0\",method=~\"$method\"}[2m])) by (method) / sum(rate(loom_calls_total{method=~\"$method\"}[2m])) by (method)",
+          "legendFormat": "{{method}} error %",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "P50 / P95 / P99 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(loom_call_duration_seconds_bucket{method=~\"$method\"}[2m])) by (le, method))",
+          "legendFormat": "p50 {{method}}",
+          "datasource": "${DS_PROMETHEUS}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(loom_call_duration_seconds_bucket{method=~\"$method\"}[2m])) by (le, method))",
+          "legendFormat": "p95 {{method}}",
+          "datasource": "${DS_PROMETHEUS}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(loom_call_duration_seconds_bucket{method=~\"$method\"}[2m])) by (le, method))",
+          "legendFormat": "p99 {{method}}",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 4,
+      "title": "Active SSE Clients",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "loom_sse_active_clients",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Total Calls Recorded",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [
+        {
+          "expr": "loom_recorded_calls_total",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Storage Write Errors",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "loom_storage_write_errors_total",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Reflection Errors",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 12 },
+      "targets": [
+        {
+          "expr": "rate(loom_reflection_errors_total[2m])",
+          "legendFormat": "{{method}}",
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Build Info",
+      "type": "table",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "loom_build_info",
+          "instant": true,
+          "datasource": "${DS_PROMETHEUS}"
+        }
+      ],
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true } } }
+      ]
+    }
+  ]
+}

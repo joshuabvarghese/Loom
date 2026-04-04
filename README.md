@@ -310,14 +310,32 @@ Example JSON log line:
 
 ## Build from Source
 
+**Requirements:** Go 1.22+. No other runtime dependencies — Loom compiles to a single static binary.
+
 ```bash
 git clone https://github.com/joshuabvarghese/loom
 cd loom
-make build       # → bin/loom
+
+# First time: fetch all dependencies
+go mod tidy
+
+# Then build
+make build            # → bin/loom
+make build-testserver # → bin/testserver (optional local gRPC backend)
+
+# Or use the all-in-one setup script
+chmod +x scripts/setup.sh && ./scripts/setup.sh
+```
+
+### Common make targets
+
+```
+make run-demo    # build + start immediately in demo mode (no backend needed)
+make run         # build + launch testserver AND loom together
 make test        # run unit tests
 make test-race   # run with race detector
-make run-demo    # start in demo mode
 make smoke       # end-to-end smoke test (requires grpcurl)
+make help        # list all available targets
 ```
 
 ---

@@ -7,18 +7,29 @@ echo ""
 echo "  🧵 Setting up Loom..."
 echo ""
 
-# Check Go
+# Check Go is installed
 if ! command -v go &>/dev/null; then
   echo "  ✗ Go not found. Install Go 1.21+ from https://golang.org/dl/"
   exit 1
 fi
 
-GO_VERSION=$(go version | awk '{print $3}')
-echo "  ✓ $GO_VERSION"
+# Check Go version (need at least 1.21)
+GO_VERSION_RAW=$(go version | awk '{print $3}' | sed 's/go//')
+GO_MAJOR=$(echo "$GO_VERSION_RAW" | cut -d. -f1)
+GO_MINOR=$(echo "$GO_VERSION_RAW" | cut -d. -f2)
+
+echo "  ✓ go$GO_VERSION_RAW"
+
+if [ "$GO_MAJOR" -lt 1 ] || { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]; }; then
+  echo ""
+  echo "  ✗ Go 1.21 or newer is required (you have go$GO_VERSION_RAW)"
+  echo "  → Download from https://golang.org/dl/"
+  exit 1
+fi
 
 # Download dependencies
 echo "  Downloading dependencies..."
-go mod download
+go mod tidy
 echo "  ✓ Dependencies ready"
 
 mkdir -p bin
@@ -35,16 +46,13 @@ echo ""
 echo "  ─────────────────────────────────────────"
 echo "  Done!  Quick start:"
 echo ""
-echo "  # Terminal 1 — start test backend"
-echo "  ./bin/testserver"
+echo "  # Option A — demo mode (no backend needed)"
+echo "  ./bin/loom -demo"
+echo "  # then open http://localhost:9998"
 echo ""
-echo "  # Terminal 2 — start Loom"
-echo "  ./bin/loom -backend localhost:50051 -ui :9998"
-echo ""
-echo "  # Terminal 3 — make a call"
-echo "  grpcurl -plaintext -d '{\"userId\":\"abc123\"}' localhost:9999 user.UserService/GetUser"
-echo ""
-echo "  # Browser — open the Web Inspector"
+echo "  # Option B — proxy your own service"
+echo "  ./bin/testserver                          # Terminal 1"
+echo "  ./bin/loom -backend localhost:50051 -ui :9998  # Terminal 2"
 echo "  open http://localhost:9998"
 echo "  ─────────────────────────────────────────"
 echo ""

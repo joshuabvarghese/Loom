@@ -1,6 +1,6 @@
 module github.com/joshuabvarghese/loom
 
-go 1.22
+go 1.21
 
 require (
 	github.com/jhump/protoreflect v1.15.6

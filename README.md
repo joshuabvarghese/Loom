@@ -15,7 +15,7 @@ Your gRPC Client  →  Loom (:9999)  →  Your Backend (:50051)
 > **Status: early development.** Core proxy, Web Inspector, session persistence, and mutation rules work. Streaming RPCs, the admin/metrics server, and structured logging are not yet implemented.
 
 ---
-
+![Loom demo](demo.png)
 ## What works right now
 
 - **Intercept & decode** — proxies any unary gRPC call and decodes request/response using Server Reflection (no proto files needed)

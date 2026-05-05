@@ -212,3 +212,25 @@ func deleteNestedField(doc map[string]any, path string) {
 	}
 	deleteNestedField(childMap, parts[1])
 }
+
+// LoadRulesFromBytes creates an Engine from a JSON byte slice (array or NDJSON).
+// Useful in tests and when rules come from a source other than the filesystem.
+func LoadRulesFromBytes(data []byte) (*Engine, error) {
+	var rules []Rule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		// Try NDJSON (one rule per line)
+		rules = nil
+		for i, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "//") {
+				continue
+			}
+			var r Rule
+			if err := json.Unmarshal([]byte(line), &r); err != nil {
+				return nil, fmt.Errorf("rules line %d: %w", i+1, err)
+			}
+			rules = append(rules, r)
+		}
+	}
+	return &Engine{rules: rules}, nil
+}

@@ -1,17 +1,25 @@
-// Package health provides /health, /ready, and /live HTTP handlers for
-// Kubernetes probes and general operational visibility.
+// Package health provides HTTP health-check handlers for Loom.
 //
-// Usage in main.go:
+// Three endpoints are exposed:
+//
+//   - /live  — liveness: always 200 while the process is running.
+//     Kubernetes uses this to decide whether to restart the container.
+//
+//   - /ready — readiness: 200 only when the backend is connected.
+//     Kubernetes uses this to decide whether to route traffic.
+//
+//   - /health — combined: 200 when healthy, 503 when the backend is
+//     disconnected or the circuit breaker is open. Useful for ops dashboards.
+//
+// Usage:
 //
 //	hc := health.New()
-//	hc.SetBackendReady(true)              // call after backend connection succeeds
-//	hc.SetCircuitBreaker(cb)              // wire in the circuit breaker
+//	hc.SetBackendReady(true)        // call after backend connection succeeds
+//	hc.SetCircuitBreaker(cb)        // optional — wires circuit breaker state
 //
-//	mux := http.NewServeMux()
-//	mux.Handle("/health", hc.Handler())  // combined — used by k8s readiness
-//	mux.Handle("/ready",  hc.ReadyHandler())
 //	mux.Handle("/live",   hc.LiveHandler())
-//	mux.Handle("/metrics", metrics.Handler())
+//	mux.Handle("/ready",  hc.ReadyHandler())
+//	mux.Handle("/health", hc.Handler())
 package health
 
 import (
@@ -26,7 +34,7 @@ type CircuitBreakerStatus interface {
 	State() string
 }
 
-// Checker holds health state.
+// Checker holds operational health state.
 type Checker struct {
 	backendReady atomic.Bool
 	cb           CircuitBreakerStatus
@@ -38,33 +46,30 @@ func New() *Checker {
 	return &Checker{startTime: time.Now()}
 }
 
-// SetBackendReady marks whether the backend gRPC connection is healthy.
+// SetBackendReady marks whether the backend gRPC connection is currently healthy.
 func (c *Checker) SetBackendReady(ok bool) {
 	c.backendReady.Store(ok)
 }
 
-// SetCircuitBreaker wires in a circuit breaker whose state is reported in /health.
+// SetCircuitBreaker wires a circuit breaker whose state is included in /health responses.
 func (c *Checker) SetCircuitBreaker(cb CircuitBreakerStatus) {
 	c.cb = cb
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 // LiveHandler returns 200 as long as the process is running.
-// Kubernetes uses this to decide whether to restart the container.
 func (c *Checker) LiveHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "alive",
-			"uptime": time.Since(c.startTime).String(),
+			"uptime": time.Since(c.startTime).Round(time.Second).String(),
 		})
 	})
 }
 
-// ReadyHandler returns 200 only when Loom is connected to its backend.
-// Kubernetes uses this to decide whether to send traffic.
+// ReadyHandler returns 200 when the backend connection is established,
+// or 503 when it is not.
 func (c *Checker) ReadyHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if !c.backendReady.Load() {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"status": "not ready",
@@ -76,31 +81,32 @@ func (c *Checker) ReadyHandler() http.Handler {
 	})
 }
 
-// Handler returns a combined health payload — handy for ops dashboards.
-//   - 200 when healthy
-//   - 503 when the backend is down or the circuit breaker is open
+// Handler returns a combined health payload.
+//
+// HTTP 200 when healthy; 503 when backend is down or circuit breaker is open.
+// The JSON body always includes status, uptime, backend connection state,
+// and circuit breaker state.
 func (c *Checker) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		backendOK := c.backendReady.Load()
 		cbState := "n/a"
 		if c.cb != nil {
 			cbState = c.cb.State()
 		}
 
-		payload := map[string]any{
-			"status":          "ok",
-			"uptime":          time.Since(c.startTime).String(),
-			"backend":         boolStr(backendOK),
-			"circuit_breaker": cbState,
-		}
-
+		status := "ok"
 		code := http.StatusOK
 		if !backendOK || cbState == "open" {
-			payload["status"] = "degraded"
+			status = "degraded"
 			code = http.StatusServiceUnavailable
 		}
 
-		writeJSON(w, code, payload)
+		writeJSON(w, code, map[string]any{
+			"status":          status,
+			"uptime":          time.Since(c.startTime).Round(time.Second).String(),
+			"backend":         connectionState(backendOK),
+			"circuit_breaker": cbState,
+		})
 	})
 }
 
@@ -109,11 +115,13 @@ func (c *Checker) Handler() http.Handler {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
 }
 
-func boolStr(b bool) string {
-	if b {
+func connectionState(connected bool) string {
+	if connected {
 		return "connected"
 	}
 	return "disconnected"

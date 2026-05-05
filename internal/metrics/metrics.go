@@ -1,14 +1,18 @@
-// Package metrics exposes Prometheus metrics for the Loom proxy.
+// Package metrics registers and exposes Prometheus metrics for Loom.
 //
-// Import this package for its side effects — registering the collectors —
-// then call Handler() to mount the scrape endpoint.
-//
-// Usage in main.go:
+// Import this package for its side-effects (collector registration), then
+// mount Handler() on the UI server's /metrics path.
 //
 //	import "github.com/joshuabvarghese/loom/internal/metrics"
-//	...
-//	http.Handle("/metrics", metrics.Handler())
-//	metrics.RecordCall(method, statusCode, durationMs)
+//
+//	mux.Handle("/metrics", metrics.Handler())
+//
+// Instrument the proxy by calling the record helpers at the end of each call:
+//
+//	metrics.SessionStart()
+//	defer metrics.SessionEnd()
+//	// ... proxy logic ...
+//	metrics.RecordCall(method, statusName, durationMs)
 package metrics
 
 import (
@@ -19,50 +23,52 @@ import (
 )
 
 var (
-	// proxyRequestsTotal counts completed RPC calls, labelled by method and
-	// gRPC status code name (e.g. "OK", "UNAVAILABLE").
+	// proxyRequestsTotal counts completed RPC calls, labelled by gRPC method
+	// path and gRPC status name (e.g. "OK", "UNAVAILABLE").
 	proxyRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "loom",
 			Name:      "proxy_requests_total",
-			Help:      "Total number of gRPC calls proxied.",
+			Help:      "Total number of gRPC calls proxied, by method and status.",
 		},
 		[]string{"method", "status"},
 	)
 
-	// proxyLatencyMs tracks end-to-end proxy latency in milliseconds.
+	// proxyLatencyMs measures end-to-end proxy latency in milliseconds,
+	// labelled by gRPC method path.
 	proxyLatencyMs = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "loom",
 			Name:      "proxy_latency_ms",
 			Help:      "End-to-end proxy latency in milliseconds.",
-			// Buckets suitable for gRPC: <1 ms fast path up to 30 s timeout.
-			Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30000},
+			// Buckets cover sub-millisecond fast paths through 30-second timeouts.
+			Buckets: []float64{0.5, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 30000},
 		},
 		[]string{"method"},
 	)
 
-	// activeSessions is a gauge of currently open proxy connections.
+	// activeSessions tracks the number of gRPC calls currently in flight.
 	activeSessions = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "loom",
 			Name:      "active_sessions",
-			Help:      "Number of in-flight gRPC calls being proxied right now.",
+			Help:      "Number of gRPC calls currently being proxied.",
 		},
 	)
 
-	// mutationsTotal counts how many calls had at least one mutation applied.
+	// mutationsTotal counts calls where at least one mutation rule fired,
+	// labelled by method and direction ("request" or "response").
 	mutationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "loom",
 			Name:      "mutations_total",
-			Help:      "Number of calls where mutation rules fired.",
+			Help:      "Number of proxied calls where a mutation rule was applied.",
 		},
 		[]string{"method", "direction"},
 	)
 
-	// circuitBreakerState exports the circuit-breaker state as a gauge.
-	// 0 = closed (healthy), 1 = half-open, 2 = open (shedding load).
+	// circuitBreakerState tracks the circuit breaker state as a gauge.
+	// 0 = closed (healthy), 1 = half-open (probing), 2 = open (shedding load).
 	circuitBreakerState = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: "loom",
@@ -82,40 +88,36 @@ func init() {
 	)
 }
 
-// Handler returns an http.Handler for the /metrics scrape endpoint.
+// Handler returns an http.Handler that serves the Prometheus /metrics scrape endpoint.
 func Handler() http.Handler {
 	return promhttp.Handler()
 }
 
-// SessionStart increments the active-sessions gauge. Call at the start of
-// ServeHTTP and defer SessionEnd.
-func SessionStart() {
-	activeSessions.Inc()
-}
+// SessionStart increments the in-flight sessions gauge.
+// Call at the top of ServeHTTP and pair with a deferred SessionEnd.
+func SessionStart() { activeSessions.Inc() }
 
-// SessionEnd decrements the active-sessions gauge.
-func SessionEnd() {
-	activeSessions.Dec()
-}
+// SessionEnd decrements the in-flight sessions gauge.
+func SessionEnd() { activeSessions.Dec() }
 
 // RecordCall records a completed proxy call.
 //
-//	method     — full gRPC method path, e.g. "/user.UserService/GetUser"
-//	statusName — gRPC status name, e.g. "OK", "UNAVAILABLE"
-//	durationMs — end-to-end latency in milliseconds
+//   - method     — full gRPC method path, e.g. "/user.UserService/GetUser"
+//   - statusName — gRPC status name, e.g. "OK", "UNAVAILABLE"
+//   - durationMs — end-to-end latency in milliseconds
 func RecordCall(method, statusName string, durationMs float64) {
 	proxyRequestsTotal.WithLabelValues(method, statusName).Inc()
 	proxyLatencyMs.WithLabelValues(method).Observe(durationMs)
 }
 
-// RecordMutation records that a mutation fired for method in direction
-// ("request" or "response").
+// RecordMutation records that a mutation rule fired for method in direction
+// (pass "request" or "response").
 func RecordMutation(method, direction string) {
 	mutationsTotal.WithLabelValues(method, direction).Inc()
 }
 
 // SetCircuitBreakerState updates the circuit-breaker gauge.
-// state must be one of "closed", "half-open", "open".
+// state must be one of "closed", "half-open", or "open".
 func SetCircuitBreakerState(state string) {
 	switch state {
 	case "closed":

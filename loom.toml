@@ -1,0 +1,50 @@
+# loom.toml — Loom configuration file
+#
+# Place this file in the directory where you run loom, or at:
+#   ~/.config/loom/config.toml
+#
+# CLI flags always take precedence over values set here.
+# All fields are optional — Loom operates perfectly from flags alone.
+
+# gRPC proxy listen address. Point your client here.
+listen = ":9999"
+
+# Backend gRPC server address.
+backend = "localhost:50051"
+
+# Session name. Call history is saved to ~/.loom/sessions/<session>.jsonl
+session = "default"
+
+# Web Inspector / health / metrics listen address.
+#
+#   Web Inspector : http://localhost:9998/
+#   Health        : http://localhost:9998/health   (combined)
+#   Liveness      : http://localhost:9998/live     (k8s liveness probe)
+#   Readiness     : http://localhost:9998/ready    (k8s readiness probe)
+#   Metrics       : http://localhost:9998/metrics  (Prometheus scrape target)
+ui = ":9998"
+
+# Enable TLS for the backend connection.
+backend_tls = false
+
+# Skip TLS certificate verification. Use only in development environments.
+backend_tls_skip_verify = false
+
+# Print extra debug information to stdout.
+verbose = false
+
+# Disable ANSI colour in terminal output.
+no_color = false
+
+[mutate]
+  # Path to a JSON file containing request/response mutation rules.
+  # Example: https://github.com/joshuabvarghese/loom#mutation-rules
+  # file = "/etc/loom/rules.json"
+
+[log]
+  # Write an NDJSON call log to this file in addition to the session store.
+  # file = "/var/log/loom/calls.jsonl"
+
+  # Minimum log level for structured JSON logs written to stderr.
+  # Options: debug | info | warn | error
+  level = "info"

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,10 +21,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/joshuabvarghese/loom/demo"
+	"github.com/joshuabvarghese/loom/internal/circuitbreaker"
+	"github.com/joshuabvarghese/loom/internal/config"
+	"github.com/joshuabvarghese/loom/internal/health"
 	"github.com/joshuabvarghese/loom/internal/metadata"
+	"github.com/joshuabvarghese/loom/internal/metrics"
 	"github.com/joshuabvarghese/loom/internal/mutator"
 	"github.com/joshuabvarghese/loom/internal/recorder"
 	"github.com/joshuabvarghese/loom/internal/reflector"
+	slogpkg "github.com/joshuabvarghese/loom/internal/slog"
 	"github.com/joshuabvarghese/loom/internal/store"
 	"github.com/joshuabvarghese/loom/internal/webui"
 	"github.com/joshuabvarghese/loom/proxy"
@@ -31,7 +37,7 @@ import (
 
 // Version is injected at build time via:
 //
-//	go build -ldflags "-X main.Version=v0.1.0" .
+//	go build -ldflags "-X main.Version=v0.2.0" .
 var Version = "dev"
 
 const banner = `
@@ -46,23 +52,21 @@ const banner = `
 `
 
 func main() {
-	listenAddr := flag.String("listen", ":9999", "gRPC proxy listen address (point your client here)")
-	backendAddr := flag.String("backend", "localhost:50051", "backend gRPC server address")
-	verbose     := flag.Bool("verbose", false, "print extra debug info")
-	noColor     := flag.Bool("no-color", false, "disable ANSI colour output")
-
-	backendTLS     := flag.Bool("backend-tls", false, "connect to backend with TLS")
+	listenAddr    := flag.String("listen", ":9999", "gRPC proxy listen address (point your client here)")
+	backendAddr   := flag.String("backend", "localhost:50051", "backend gRPC server address")
+	verbose       := flag.Bool("verbose", false, "print extra debug info")
+	noColor       := flag.Bool("no-color", false, "disable ANSI colour output")
+	backendTLS    := flag.Bool("backend-tls", false, "connect to backend with TLS")
 	backendTLSSkip := flag.Bool("backend-tls-skip-verify", false, "skip TLS certificate verification (insecure)")
-
-	sessionName := flag.String("session", "default", "session name — history saved to ~/.loom/sessions/<name>.jsonl")
-	logFile     := flag.String("log", "", "also write NDJSON to this file")
-	mutateFile  := flag.String("mutate", "", "path to JSON mutation rules file")
-	protoDir    := flag.String("proto-dir", "", "directory of .proto files (fallback when reflection is disabled)")
-	uiAddr      := flag.String("ui", ":9998", "Web Inspector UI listen address (empty = disabled)")
-	replayFile  := flag.String("replay", "", "replay an NDJSON log file then exit")
-	demoMode    := flag.Bool("demo", false, "start with an embedded backend and send sample traffic — no setup needed")
-	showVersion := flag.Bool("version", false, "print version and exit")
-
+	sessionName   := flag.String("session", "default", "session name — history saved to ~/.loom/sessions/<name>.jsonl")
+	logFile       := flag.String("log", "", "also write NDJSON call log to this file")
+	mutateFile    := flag.String("mutate", "", "path to JSON mutation rules file")
+	protoDir      := flag.String("proto-dir", "", "directory of .proto files (fallback when server reflection is disabled)")
+	uiAddr        := flag.String("ui", ":9998", "Web Inspector + health/metrics listen address (empty = disabled)")
+	replayFile    := flag.String("replay", "", "replay an NDJSON log file then exit")
+	demoMode      := flag.Bool("demo", false, "start with an embedded backend and send sample traffic — no setup needed")
+	showVersion   := flag.Bool("version", false, "print version and exit")
+	configFile    := flag.String("config", "", "path to loom.toml or loom.yaml config file")
 	flag.Parse()
 
 	if *showVersion {
@@ -72,7 +76,29 @@ func main() {
 
 	fmt.Printf(banner, Version)
 
-	// ── Demo mode — embedded backend, zero config ─────────────────────────────
+	// ── Load config file; CLI flags override file values ──────────────────────
+	cfg, err := config.Load(*configFile)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	applyConfigDefaults(cfg, listenAddr, backendAddr, sessionName, logFile, mutateFile, protoDir, uiAddr, verbose, noColor)
+
+	// ── Structured logging ────────────────────────────────────────────────────
+	switch strings.ToLower(cfg.Log.Level) {
+	case "debug":
+		slogpkg.SetLevel(slogpkg.LevelDebug)
+	case "warn":
+		slogpkg.SetLevel(slogpkg.LevelWarn)
+	case "error":
+		slogpkg.SetLevel(slogpkg.LevelError)
+	default:
+		slogpkg.SetLevel(slogpkg.LevelInfo)
+	}
+	if *verbose {
+		slogpkg.SetLevel(slogpkg.LevelDebug)
+	}
+
+	// ── Demo mode ─────────────────────────────────────────────────────────────
 	if *demoMode {
 		runDemoMode(*listenAddr, *uiAddr)
 		return
@@ -102,6 +128,8 @@ func main() {
 	}
 	if *uiAddr != "" {
 		fmt.Printf("  Web UI       : http://localhost%s\n", *uiAddr)
+		fmt.Printf("  Health       : http://localhost%s/health\n", *uiAddr)
+		fmt.Printf("  Metrics      : http://localhost%s/metrics\n", *uiAddr)
 	}
 	fmt.Println()
 
@@ -118,6 +146,67 @@ func main() {
 		verbose:        *verbose,
 		noColor:        *noColor,
 	})
+}
+
+// applyConfigDefaults applies file config values to flag pointers only when
+// the flag still holds its default value (i.e. was not explicitly passed).
+func applyConfigDefaults(
+	cfg *config.File,
+	listenAddr, backendAddr, sessionName, logFile, mutateFile, protoDir, uiAddr *string,
+	verbose, noColor *bool,
+) {
+	type strOverride struct{ flag, val *string }
+	for _, o := range []strOverride{
+		{listenAddr, &cfg.Listen},
+		{backendAddr, &cfg.Backend},
+		{sessionName, &cfg.Session},
+		{logFile, &cfg.Log.File},
+		{mutateFile, &cfg.Mutate.File},
+		{protoDir, &cfg.ProtoDir},
+		{uiAddr, &cfg.UI},
+	} {
+		if *o.val != "" {
+			// Only apply when the flag was not explicitly set on the command line.
+			// We detect this by checking if a flag with that default was visited.
+			// Simpler approach: just apply the file value; the flag parse already
+			// ran, and an explicit flag will have overwritten the default in the
+			// *string pointer. So we only apply if the pointer still equals the
+			// built-in default — but defaults vary. Instead we track via flag.Visit.
+		}
+		_ = o // handled below
+	}
+
+	// Use flag.Visit to collect explicitly-set flag names.
+	set := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if !set["listen"] && cfg.Listen != "" {
+		*listenAddr = cfg.Listen
+	}
+	if !set["backend"] && cfg.Backend != "" {
+		*backendAddr = cfg.Backend
+	}
+	if !set["session"] && cfg.Session != "" {
+		*sessionName = cfg.Session
+	}
+	if !set["log"] && cfg.Log.File != "" {
+		*logFile = cfg.Log.File
+	}
+	if !set["mutate"] && cfg.Mutate.File != "" {
+		*mutateFile = cfg.Mutate.File
+	}
+	if !set["proto-dir"] && cfg.ProtoDir != "" {
+		*protoDir = cfg.ProtoDir
+	}
+	if !set["ui"] && cfg.UI != "" {
+		*uiAddr = cfg.UI
+	}
+	if !set["verbose"] && cfg.Verbose {
+		*verbose = true
+	}
+	if !set["no-color"] && cfg.NoColor {
+		*noColor = true
+	}
 }
 
 // ── Demo ──────────────────────────────────────────────────────────────────────
@@ -171,6 +260,18 @@ type proxyConfig struct {
 }
 
 func runProxy(cfg proxyConfig) {
+	ctx := context.Background()
+
+	// ── Circuit breaker ───────────────────────────────────────────────────────
+	cb := circuitbreaker.New(circuitbreaker.Options{
+		Threshold: 5,
+		Timeout:   30 * time.Second,
+	})
+
+	// ── Health checker ────────────────────────────────────────────────────────
+	hc := health.New()
+	hc.SetCircuitBreaker(cb)
+
 	// ── Connect to backend ────────────────────────────────────────────────────
 	var creds credentials.TransportCredentials
 	if cfg.backendTLS {
@@ -179,10 +280,10 @@ func runProxy(cfg proxyConfig) {
 		creds = insecure.NewCredentials()
 	}
 
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer dialCancel()
 
-	//nolint:staticcheck // grpc.DialContext is deprecated in v1.63 but still works in v1.61
+	//nolint:staticcheck // grpc.DialContext is deprecated in v1.63 but still works with v1.62
 	conn, err := grpc.DialContext(dialCtx, cfg.backendAddr,
 		grpc.WithBlock(),
 		grpc.WithTransportCredentials(creds),
@@ -191,6 +292,8 @@ func runProxy(cfg proxyConfig) {
 		log.Fatalf("❌  Cannot connect to %s: %v\n\nIs the backend running?", cfg.backendAddr, err)
 	}
 	defer conn.Close()
+
+	hc.SetBackendReady(true)
 	fmt.Printf("  ✓ Connected to backend at %s\n\n", cfg.backendAddr)
 
 	// ── Reflector ─────────────────────────────────────────────────────────────
@@ -214,7 +317,7 @@ func runProxy(cfg proxyConfig) {
 	fmt.Printf("  ✓ Session %q  (%d historical calls)\n\n", si.Name, si.Count)
 	rec := sessionStore.Recorder
 
-	// Mirror to extra log file if requested
+	// Mirror to an extra log file if requested.
 	if cfg.logFile != "" {
 		extraRec, lerr := recorder.New(cfg.logFile)
 		if lerr != nil {
@@ -248,7 +351,7 @@ func runProxy(cfg proxyConfig) {
 		}
 	}
 
-	// ── Web Inspector UI ──────────────────────────────────────────────────────
+	// ── Web Inspector + health + metrics ──────────────────────────────────────
 	if cfg.uiAddr != "" {
 		proxyHostPort := "localhost" + cfg.listenAddr
 		replayFn := func(call *recorder.CallRecord) (string, error) {
@@ -259,8 +362,16 @@ func runProxy(cfg proxyConfig) {
 		if lisErr != nil {
 			log.Fatalf("❌  UI listen %s: %v", cfg.uiAddr, lisErr)
 		}
+
+		uiMux := http.NewServeMux()
+		uiMux.Handle("/", uiServer.Handler())
+		uiMux.Handle("/health", hc.Handler())
+		uiMux.Handle("/ready", hc.ReadyHandler())
+		uiMux.Handle("/live", hc.LiveHandler())
+		uiMux.Handle("/metrics", metrics.Handler())
+
 		go func() {
-			if serveErr := http.Serve(uiLis, uiServer.Handler()); serveErr != nil && serveErr != http.ErrServerClosed {
+			if serveErr := http.Serve(uiLis, uiMux); serveErr != nil && serveErr != http.ErrServerClosed {
 				log.Printf("Web UI: %v", serveErr)
 			}
 		}()
@@ -274,13 +385,14 @@ func runProxy(cfg proxyConfig) {
 		Reflector:            res,
 		Recorder:             rec,
 		Mutator:              mut,
+		CircuitBreaker:       cb,
 		Verbose:              cfg.verbose,
 		Color:                !cfg.noColor,
 		BackendTLS:           cfg.backendTLS,
 		BackendTLSSkipVerify: cfg.backendTLSSkip,
 	}
-	// Guard against Go nil-interface-wrapping: a nil *metadata.Engine assigned
-	// to an interface field produces a non-nil interface value.
+	// Guard against nil-interface-wrapping: a nil *metadata.Engine assigned to
+	// an interface field produces a non-nil interface value, which breaks nil checks.
 	if metaMut != nil {
 		proxyCfg.MetaMutator = metaMut
 	}
@@ -297,10 +409,16 @@ func runProxy(cfg proxyConfig) {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
+		hc.SetBackendReady(false)
 		fmt.Println("\n  Shutting down…")
-		srv.Close()
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}()
 
+	slogpkg.Info(ctx, "loom ready", "listen", cfg.listenAddr, "backend", cfg.backendAddr)
 	fmt.Printf("  🧵 Loom is live — point your gRPC client at %s\n\n", cfg.listenAddr)
 	fmt.Println("  ─────────────────────────────────────────")
 

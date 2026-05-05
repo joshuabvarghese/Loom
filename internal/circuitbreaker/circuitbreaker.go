@@ -1,22 +1,19 @@
-// Package circuitbreaker provides a simple three-state circuit breaker for
-// protecting backend connections from cascading failures.
+// Package circuitbreaker provides a thread-safe three-state circuit breaker
+// for Loom's backend connections.
 //
 // States:
-//   - Closed   — normal operation; all calls pass through.
-//   - Open     — consecutive failures exceeded Threshold; calls are rejected
-//                immediately with ErrCircuitOpen to shed load fast.
-//   - HalfOpen — Timeout has elapsed since the last failure; one probe call
-//                is allowed through to test whether the backend recovered.
 //
-// Typical usage:
+//	Closed   — normal; every call passes through to the backend.
+//	Open     — failure threshold exceeded; calls return ErrCircuitOpen immediately
+//	           without touching the backend, preventing thundering-herd.
+//	HalfOpen — timeout elapsed; exactly one probe call is allowed through.
+//	           Success → Closed. Failure → Open (resets timeout).
 //
-//	cb := circuitbreaker.New() // Threshold=5, Timeout=30s
-//	err := cb.Call(func() error {
-//	    return doBackendRequest()
-//	})
-//	if errors.Is(err, circuitbreaker.ErrCircuitOpen) {
-//	    // fast-path rejection — backend is known-bad
-//	}
+// Usage:
+//
+//	cb := circuitbreaker.New(circuitbreaker.Options{Threshold: 5, Timeout: 30*time.Second})
+//	err := cb.Call(func() error { return transport.RoundTrip(req) })
+//	if errors.Is(err, circuitbreaker.ErrCircuitOpen) { /* shed load */ }
 package circuitbreaker
 
 import (
@@ -28,69 +25,78 @@ import (
 // ErrCircuitOpen is returned when the circuit is open and calls are being shed.
 var ErrCircuitOpen = errors.New("circuit breaker open: backend unavailable")
 
-// state is the internal finite-state-machine state of the breaker.
 type state int
 
 const (
-	stateClosed   state = iota // normal — calls pass through
-	stateOpen                  // tripped — calls rejected immediately
-	stateHalfOpen              // probe window — one call allowed through
+	stateClosed   state = iota
+	stateOpen
+	stateHalfOpen
 )
 
+func (s state) String() string {
+	switch s {
+	case stateOpen:
+		return "open"
+	case stateHalfOpen:
+		return "half-open"
+	default:
+		return "closed"
+	}
+}
+
+// Options configures a Breaker.
+type Options struct {
+	// Threshold is the number of consecutive failures that open the circuit.
+	// Defaults to 5.
+	Threshold int
+	// Timeout is how long the circuit stays open before a probe is allowed.
+	// Defaults to 30 seconds.
+	Timeout time.Duration
+}
+
+func (o Options) resolvedThreshold() int {
+	if o.Threshold > 0 {
+		return o.Threshold
+	}
+	return 5
+}
+
+func (o Options) resolvedTimeout() time.Duration {
+	if o.Timeout > 0 {
+		return o.Timeout
+	}
+	return 30 * time.Second
+}
+
 // Breaker is a thread-safe circuit breaker.
-//
-// Zero value is not usable; construct with New().
 type Breaker struct {
+	opts        Options
 	mu          sync.Mutex
 	current     state
 	failures    int
 	lastFailure time.Time
-
-	// Threshold is the number of consecutive failures that trip the circuit.
-	// Defaults to 5 when New() is used.
-	Threshold int
-
-	// Timeout is how long the circuit stays open before allowing one probe
-	// call through (transitioning to HalfOpen).
-	// Defaults to 30 seconds when New() is used.
-	Timeout time.Duration
 }
 
-// New returns a Breaker with production-ready defaults:
-//   - Threshold = 5 consecutive failures
-//   - Timeout   = 30 seconds in the open state before probing
-func New() *Breaker {
-	return &Breaker{
-		Threshold: 5,
-		Timeout:   30 * time.Second,
-	}
+// New returns a Breaker with the given options.
+// Zero-value options apply sensible defaults (threshold=5, timeout=30s).
+func New(opts Options) *Breaker {
+	return &Breaker{opts: opts}
 }
 
-// Call executes fn if the circuit allows it.
-//
-//   - Closed:   fn is called normally.
-//   - Open:     ErrCircuitOpen is returned without calling fn, unless Timeout
-//               has elapsed, in which case the circuit moves to HalfOpen and
-//               fn is called as a probe.
-//   - HalfOpen: a probe is already in flight; concurrent callers receive
-//               ErrCircuitOpen to prevent thundering-herd on recovery.
-//
-// On success, the failure counter resets and the circuit closes.
-// On failure, the failure counter increments; once it reaches the threshold
-// the circuit opens.
+// Call executes fn if the circuit permits it.
+// Returns ErrCircuitOpen when the circuit is open without calling fn.
 func (b *Breaker) Call(fn func() error) error {
 	b.mu.Lock()
 	switch b.current {
 	case stateOpen:
-		if time.Since(b.lastFailure) < b.timeout() {
+		if time.Since(b.lastFailure) < b.opts.resolvedTimeout() {
 			b.mu.Unlock()
 			return ErrCircuitOpen
 		}
-		// Timeout elapsed — allow exactly one probe through.
+		// Timeout elapsed — allow a single probe.
 		b.current = stateHalfOpen
-
 	case stateHalfOpen:
-		// A probe is already in flight; shed this concurrent caller.
+		// A probe is already in flight; reject concurrent requests.
 		b.mu.Unlock()
 		return ErrCircuitOpen
 	}
@@ -104,50 +110,28 @@ func (b *Breaker) Call(fn func() error) error {
 	if err != nil {
 		b.failures++
 		b.lastFailure = time.Now()
-		if b.failures >= b.threshold() {
+		if b.failures >= b.opts.resolvedThreshold() {
 			b.current = stateOpen
 		}
 		return err
 	}
 
-	// Successful call — reset to fully closed.
+	// Success — reset to healthy state.
 	b.failures = 0
 	b.current = stateClosed
 	return nil
 }
 
-// State returns a human-readable description of the current circuit state.
-// The return value is one of "closed", "half-open", or "open".
-// It is safe to call concurrently and is used by the health checker.
+// State returns "closed", "half-open", or "open" for health and metrics endpoints.
 func (b *Breaker) State() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	switch b.current {
-	case stateOpen:
-		return "open"
-	case stateHalfOpen:
-		return "half-open"
-	default:
-		return "closed"
-	}
+	return b.current.String()
 }
 
-// ── private helpers ────────────────────────────────────────────────────────────
-
-// threshold returns the effective failure threshold, applying the default (5)
-// when the caller left Threshold at its zero value.
-func (b *Breaker) threshold() int {
-	if b.Threshold > 0 {
-		return b.Threshold
-	}
-	return 5
-}
-
-// timeout returns the effective open-state timeout, applying the default
-// (30 s) when the caller left Timeout at its zero value.
-func (b *Breaker) timeout() time.Duration {
-	if b.Timeout > 0 {
-		return b.Timeout
-	}
-	return 30 * time.Second
+// Failures returns the current consecutive failure count.
+func (b *Breaker) Failures() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failures
 }

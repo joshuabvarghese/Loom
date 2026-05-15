@@ -12,27 +12,25 @@ Your gRPC Client  →  Loom (:9999)  →  Your Backend (:50051)
                   http://localhost:9998
 ```
 
-> **Status: early development.** Core proxy, Web Inspector, session persistence, and mutation rules work. Streaming RPCs, the admin/metrics server, and structured logging are not yet implemented.
+> **Status: production-ready.** Core proxy, Web Inspector, session persistence, mutation rules, streaming RPCs (server, client, bidi), admin/health/metrics endpoints, and structured JSON logging are all implemented.
 
 ---
 ![Loom demo](demo.png)
 ## What works right now
 
-- **Intercept & decode** — proxies any unary gRPC call and decodes request/response using Server Reflection (no proto files needed)
+- **Intercept & decode** — proxies any gRPC call (unary, server-streaming, client-streaming, bidi) and decodes every frame using Server Reflection (no proto files needed)
 - **Web Inspector** — live call stream in the browser with request/response JSON viewer and one-click `grpcurl` copy
 - **Session persistence** — call history saved to `~/.loom/sessions/` and restored on restart
 - **Body mutation** — inject, override, or strip JSON fields on any request or response via a rules file
 - **Header mutation** — set, add, or delete gRPC metadata per rule
 - **Replay** — re-send any recorded call from the UI or with `-replay`
+- **Streaming RPCs** — server-streaming, client-streaming, and bidi all work; every frame is decoded and shown in the Web Inspector
 - **TLS** — proxy to TLS-enabled backends with `-backend-tls`
 - **Demo mode** — `loom -demo` spins up an embedded backend with sample traffic, no setup needed
 - **Single binary** — no runtime, no dependencies
 
 ## What's not done yet
 
-- Streaming RPCs (server, client, bidi) — currently treated as unary
-- Admin server (`/healthz`, `/readyz`, `/metrics`, `/debug/pprof`)
-- Structured JSON logging (`-log-format json`)
 - Pre-built releases (Homebrew, `go install`, Docker image)
 
 ---

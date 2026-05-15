@@ -12,6 +12,12 @@ service UserService {
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   // CreateUser creates a new user.
   rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  // ListUsers streams all users matching the filter (server-streaming).
+  rpc ListUsers(ListUsersRequest) returns (stream GetUserResponse);
+  // BatchCreateUsers creates multiple users from a client stream (client-streaming).
+  rpc BatchCreateUsers(stream CreateUserRequest) returns (BatchCreateUsersResponse);
+  // WatchUsers streams live user events as they happen (bidi-streaming).
+  rpc WatchUsers(stream WatchUsersRequest) returns (stream WatchUsersResponse);
 }
 
 // User represents a system user.
@@ -45,4 +51,39 @@ message CreateUserRequest {
 
 message CreateUserResponse {
   User user = 1;
+}
+
+// ListUsersRequest filters for ListUsers (server-streaming).
+message ListUsersRequest {
+  // role_filter, if set, restricts results to users with this role.
+  // Leave as ROLE_UNSPECIFIED to return all users.
+  User.Role role_filter = 1;
+  // limit is the maximum number of users to return (0 = no limit).
+  int32 limit = 2;
+}
+
+// BatchCreateUsersResponse summarises a client-streaming batch create.
+message BatchCreateUsersResponse {
+  int32 created = 1;
+  repeated User users = 2;
+}
+
+// WatchUsersRequest is sent by the client to subscribe to user events.
+message WatchUsersRequest {
+  // user_id to watch (empty = watch all).
+  string user_id = 1;
+}
+
+// WatchUsersEvent describes the type of change.
+enum WatchUsersEvent {
+  EVENT_UNSPECIFIED = 0;
+  EVENT_CREATED     = 1;
+  EVENT_UPDATED     = 2;
+  EVENT_DELETED     = 3;
+}
+
+// WatchUsersResponse is sent by the server for each user event.
+message WatchUsersResponse {
+  WatchUsersEvent event = 1;
+  User            user  = 2;
 }

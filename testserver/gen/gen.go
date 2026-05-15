@@ -13,6 +13,7 @@ package gen
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -36,11 +37,16 @@ var (
 
 	FileDesc protoreflect.FileDescriptor
 
-	UserDesc          protoreflect.MessageDescriptor
-	GetUserReqDesc    protoreflect.MessageDescriptor
-	GetUserRespDesc   protoreflect.MessageDescriptor
-	CreateUserReqDesc protoreflect.MessageDescriptor
-	CreateUserRespDesc protoreflect.MessageDescriptor
+	UserDesc               protoreflect.MessageDescriptor
+	GetUserReqDesc         protoreflect.MessageDescriptor
+	GetUserRespDesc        protoreflect.MessageDescriptor
+	CreateUserReqDesc      protoreflect.MessageDescriptor
+	CreateUserRespDesc     protoreflect.MessageDescriptor
+	ListUsersReqDesc       protoreflect.MessageDescriptor
+	BatchCreateRespDesc    protoreflect.MessageDescriptor
+	WatchUsersReqDesc      protoreflect.MessageDescriptor
+	WatchUsersRespDesc     protoreflect.MessageDescriptor
+	WatchUsersEventDesc    protoreflect.EnumDescriptor
 
 	UserRoleDesc protoreflect.EnumDescriptor
 )
@@ -55,12 +61,26 @@ func ptr[T any](v T) *T { return &v }
 // and registers it with the global proto registry. This is equivalent to
 // what protoc-gen-go embeds as raw bytes in generated code.
 func buildDescriptors() {
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+
 	fdp := &descriptorpb.FileDescriptorProto{
 		Name:       ptr("user.proto"),
 		Package:    ptr("user"),
 		Dependency: []string{"google/protobuf/timestamp.proto"},
 		Options:    &descriptorpb.FileOptions{GoPackage: ptr("github.com/joshuabvarghese/loom/testserver/gen")},
 		Syntax:     ptr("proto3"),
+
+		EnumType: []*descriptorpb.EnumDescriptorProto{
+			{
+				Name: ptr("WatchUsersEvent"),
+				Value: []*descriptorpb.EnumValueDescriptorProto{
+					{Name: ptr("EVENT_UNSPECIFIED"), Number: ptr(int32(0))},
+					{Name: ptr("EVENT_CREATED"), Number: ptr(int32(1))},
+					{Name: ptr("EVENT_UPDATED"), Number: ptr(int32(2))},
+					{Name: ptr("EVENT_DELETED"), Number: ptr(int32(3))},
+				},
+			},
+		},
 
 		MessageType: []*descriptorpb.DescriptorProto{
 			{
@@ -109,14 +129,79 @@ func buildDescriptors() {
 					fieldMsg("user", 1, ".user.User", "user"),
 				},
 			},
+			// ListUsersRequest — server-streaming input
+			{
+				Name: ptr("ListUsersRequest"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					fieldEnum("role_filter", 1, ".user.User.Role", "roleFilter"),
+					field("limit", 2, descriptorpb.FieldDescriptorProto_TYPE_INT32, "", "limit"),
+				},
+			},
+			// BatchCreateUsersResponse — client-streaming output
+			{
+				Name: ptr("BatchCreateUsersResponse"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					field("created", 1, descriptorpb.FieldDescriptorProto_TYPE_INT32, "", "created"),
+					{
+						Name:     ptr("users"),
+						Number:   ptr(int32(2)),
+						Label:    repeated,
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: ptr(".user.User"),
+						JsonName: ptr("users"),
+					},
+				},
+			},
+			// WatchUsersRequest — bidi-streaming input
+			{
+				Name: ptr("WatchUsersRequest"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					field("user_id", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING, "", "userId"),
+				},
+			},
+			// WatchUsersResponse — bidi-streaming output
+			{
+				Name: ptr("WatchUsersResponse"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					fieldEnum("event", 1, ".user.WatchUsersEvent", "event"),
+					fieldMsg("user", 2, ".user.User", "user"),
+				},
+			},
 		},
 
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
 				Name: ptr("UserService"),
 				Method: []*descriptorpb.MethodDescriptorProto{
-					{Name: ptr("GetUser"), InputType: ptr(".user.GetUserRequest"), OutputType: ptr(".user.GetUserResponse")},
-					{Name: ptr("CreateUser"), InputType: ptr(".user.CreateUserRequest"), OutputType: ptr(".user.CreateUserResponse")},
+					{
+						Name:       ptr("GetUser"),
+						InputType:  ptr(".user.GetUserRequest"),
+						OutputType: ptr(".user.GetUserResponse"),
+					},
+					{
+						Name:       ptr("CreateUser"),
+						InputType:  ptr(".user.CreateUserRequest"),
+						OutputType: ptr(".user.CreateUserResponse"),
+					},
+					{
+						Name:            ptr("ListUsers"),
+						InputType:       ptr(".user.ListUsersRequest"),
+						OutputType:      ptr(".user.GetUserResponse"),
+						ServerStreaming: ptr(true),
+					},
+					{
+						Name:            ptr("BatchCreateUsers"),
+						InputType:       ptr(".user.CreateUserRequest"),
+						OutputType:      ptr(".user.BatchCreateUsersResponse"),
+						ClientStreaming: ptr(true),
+					},
+					{
+						Name:            ptr("WatchUsers"),
+						InputType:       ptr(".user.WatchUsersRequest"),
+						OutputType:      ptr(".user.WatchUsersResponse"),
+						ClientStreaming: ptr(true),
+						ServerStreaming: ptr(true),
+					},
 				},
 			},
 		},
@@ -147,14 +232,22 @@ func buildDescriptors() {
 	GetUserRespDesc = msgs.ByName("GetUserResponse")
 	CreateUserReqDesc = msgs.ByName("CreateUserRequest")
 	CreateUserRespDesc = msgs.ByName("CreateUserResponse")
+	ListUsersReqDesc = msgs.ByName("ListUsersRequest")
+	BatchCreateRespDesc = msgs.ByName("BatchCreateUsersResponse")
+	WatchUsersReqDesc = msgs.ByName("WatchUsersRequest")
+	WatchUsersRespDesc = msgs.ByName("WatchUsersResponse")
+	WatchUsersEventDesc = fd.Enums().ByName("WatchUsersEvent")
 	UserRoleDesc = UserDesc.Enums().ByName("Role")
 
 	// Register all message types so proto.Marshal / Unmarshal can find them
-	registerType(fd.Messages().ByName("User"))
-	registerType(fd.Messages().ByName("GetUserRequest"))
-	registerType(fd.Messages().ByName("GetUserResponse"))
-	registerType(fd.Messages().ByName("CreateUserRequest"))
-	registerType(fd.Messages().ByName("CreateUserResponse"))
+	for _, name := range []protoreflect.Name{
+		"User", "GetUserRequest", "GetUserResponse",
+		"CreateUserRequest", "CreateUserResponse",
+		"ListUsersRequest", "BatchCreateUsersResponse",
+		"WatchUsersRequest", "WatchUsersResponse",
+	} {
+		registerType(fd.Messages().ByName(name))
+	}
 }
 
 func registerType(md protoreflect.MessageDescriptor) {
@@ -187,8 +280,28 @@ func fieldEnum(name string, num int32, typeName, json string) *descriptorpb.Fiel
 }
 
 // ──────────────────────────────────────────────────────────────
-// gRPC service types (mirrors what protoc-gen-go-grpc generates)
+// Go types mirroring the proto messages
 // ──────────────────────────────────────────────────────────────
+
+// UserRole mirrors the User.Role enum.
+type UserRole int32
+
+const (
+	User_ROLE_UNSPECIFIED UserRole = 0
+	User_ROLE_ADMIN       UserRole = 1
+	User_ROLE_EDITOR      UserRole = 2
+	User_ROLE_VIEWER      UserRole = 3
+)
+
+// WatchEvent mirrors WatchUsersEvent.
+type WatchEvent int32
+
+const (
+	WatchEvent_UNSPECIFIED WatchEvent = 0
+	WatchEvent_CREATED     WatchEvent = 1
+	WatchEvent_UPDATED     WatchEvent = 2
+	WatchEvent_DELETED     WatchEvent = 3
+)
 
 // User is a dynamic wrapper so test server code can use field helpers.
 type User struct {
@@ -198,16 +311,6 @@ type User struct {
 	Role      UserRole
 	CreatedAt *timestamppb.Timestamp
 }
-
-// UserRole mirrors the enum values.
-type UserRole int32
-
-const (
-	User_ROLE_UNSPECIFIED UserRole = 0
-	User_ROLE_ADMIN       UserRole = 1
-	User_ROLE_EDITOR      UserRole = 2
-	User_ROLE_VIEWER      UserRole = 3
-)
 
 // GetUserRequest is the decoded request for GetUser.
 type GetUserRequest struct{ UserId string }
@@ -221,14 +324,58 @@ type CreateUserRequest struct{ Name, Email string }
 // CreateUserResponse wraps the created User.
 type CreateUserResponse struct{ User *User }
 
+// ListUsersRequest is the request for ListUsers (server-streaming).
+type ListUsersRequest struct {
+	RoleFilter UserRole
+	Limit      int32
+}
+
+// BatchCreateUsersResponse summarises a client-streaming batch create.
+type BatchCreateUsersResponse struct {
+	Created int32
+	Users   []*User
+}
+
+// WatchUsersRequest is sent by the client to subscribe to events.
+type WatchUsersRequest struct{ UserId string }
+
+// WatchUsersResponse is sent by the server for each user event.
+type WatchUsersResponse struct {
+	Event WatchEvent
+	User  *User
+}
+
 // ──────────────────────────────────────────────────────────────
 // gRPC server interface & registration
 // ──────────────────────────────────────────────────────────────
 
+// ListUsersServer is the server-side streaming interface for ListUsers.
+type ListUsersServer interface {
+	Send(*GetUserResponse) error
+	grpc.ServerStream
+}
+
+// BatchCreateUsersServer is the server-side interface for BatchCreateUsers.
+type BatchCreateUsersServer interface {
+	Recv() (*CreateUserRequest, error)
+	SendAndClose(*BatchCreateUsersResponse) error
+	grpc.ServerStream
+}
+
+// WatchUsersServer is the server-side bidi interface for WatchUsers.
+type WatchUsersServer interface {
+	Send(*WatchUsersResponse) error
+	Recv() (*WatchUsersRequest, error)
+	grpc.ServerStream
+}
+
 // UserServiceServer is the server-side interface for UserService.
 type UserServiceServer interface {
-	GetUser(req *GetUserRequest) (*GetUserResponse, error)
-	CreateUser(req *CreateUserRequest) (*CreateUserResponse, error)
+	GetUser(*GetUserRequest) (*GetUserResponse, error)
+	CreateUser(*CreateUserRequest) (*CreateUserResponse, error)
+	ListUsers(*ListUsersRequest, ListUsersServer) error
+	BatchCreateUsers(BatchCreateUsersServer) (*BatchCreateUsersResponse, error)
+	WatchUsers(WatchUsersServer) error
 }
 
 // UnimplementedUserServiceServer provides default (unimplemented) handlers.
@@ -239,6 +386,15 @@ func (UnimplementedUserServiceServer) GetUser(*GetUserRequest) (*GetUserResponse
 }
 func (UnimplementedUserServiceServer) CreateUser(*CreateUserRequest) (*CreateUserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "CreateUser not implemented")
+}
+func (UnimplementedUserServiceServer) ListUsers(_ *ListUsersRequest, _ ListUsersServer) error {
+	return status.Error(codes.Unimplemented, "ListUsers not implemented")
+}
+func (UnimplementedUserServiceServer) BatchCreateUsers(_ BatchCreateUsersServer) (*BatchCreateUsersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "BatchCreateUsers not implemented")
+}
+func (UnimplementedUserServiceServer) WatchUsers(_ WatchUsersServer) error {
+	return status.Error(codes.Unimplemented, "WatchUsers not implemented")
 }
 
 // RegisterUserServiceServer registers srv with the gRPC server s.
@@ -251,21 +407,32 @@ var UserService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "user.UserService",
 	HandlerType: (*UserServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{MethodName: "GetUser", Handler: _UserService_GetUser_Handler},
+		{MethodName: "CreateUser", Handler: _UserService_CreateUser_Handler},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "GetUser",
-			Handler:    _UserService_GetUser_Handler,
+			StreamName:    "ListUsers",
+			Handler:       _UserService_ListUsers_Handler,
+			ServerStreams: true,
 		},
 		{
-			MethodName: "CreateUser",
-			Handler:    _UserService_CreateUser_Handler,
+			StreamName:    "BatchCreateUsers",
+			Handler:       _UserService_BatchCreateUsers_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "WatchUsers",
+			Handler:       _UserService_WatchUsers_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "user.proto",
 }
 
 // ──────────────────────────────────────────────────────────────
-// gRPC method handlers — decode dynamic proto → call server
+// Unary method handlers
 // ──────────────────────────────────────────────────────────────
 
 func _UserService_GetUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -277,16 +444,13 @@ func _UserService_GetUser_Handler(srv interface{}, ctx context.Context, dec func
 		UserId: dynReq.Get(GetUserReqDesc.Fields().ByName("user_id")).String(),
 	}
 	info := &grpc.UnaryServerInfo{Server: srv, FullMethod: "/user.UserService/GetUser"}
-	handler := func(s interface{}, r interface{}) (interface{}, error) {
-		return s.(UserServiceServer).GetUser(r.(*GetUserRequest))
-	}
 	var resp *GetUserResponse
 	var err error
 	if interceptor == nil {
 		resp, err = srv.(UserServiceServer).GetUser(req)
 	} else {
 		result, iErr := interceptor(ctx, req, info, func(ctx context.Context, req interface{}) (interface{}, error) {
-			return handler(srv, req)
+			return srv.(UserServiceServer).GetUser(req.(*GetUserRequest))
 		})
 		if iErr != nil {
 			return nil, iErr
@@ -329,6 +493,94 @@ func _UserService_CreateUser_Handler(srv interface{}, ctx context.Context, dec f
 }
 
 // ──────────────────────────────────────────────────────────────
+// Streaming method handlers
+// ──────────────────────────────────────────────────────────────
+
+// ── ListUsers (server-streaming) ──────────────────────────────
+
+type listUsersServer struct{ grpc.ServerStream }
+
+func (s *listUsersServer) Send(resp *GetUserResponse) error {
+	msg, err := marshalGetUserResponse(resp)
+	if err != nil {
+		return err
+	}
+	return s.ServerStream.SendMsg(msg)
+}
+
+func _UserService_ListUsers_Handler(srv interface{}, stream grpc.ServerStream) error {
+	dynReq := dynamicpb.NewMessage(ListUsersReqDesc)
+	if err := stream.RecvMsg(dynReq); err != nil {
+		return err
+	}
+	fields := ListUsersReqDesc.Fields()
+	req := &ListUsersRequest{
+		RoleFilter: UserRole(dynReq.Get(fields.ByName("role_filter")).Enum()),
+		Limit:      int32(dynReq.Get(fields.ByName("limit")).Int()),
+	}
+	return srv.(UserServiceServer).ListUsers(req, &listUsersServer{stream})
+}
+
+// ── BatchCreateUsers (client-streaming) ───────────────────────
+
+type batchCreateServer struct{ grpc.ServerStream }
+
+func (s *batchCreateServer) Recv() (*CreateUserRequest, error) {
+	dynReq := dynamicpb.NewMessage(CreateUserReqDesc)
+	if err := s.ServerStream.RecvMsg(dynReq); err != nil {
+		return nil, err
+	}
+	fields := CreateUserReqDesc.Fields()
+	return &CreateUserRequest{
+		Name:  dynReq.Get(fields.ByName("name")).String(),
+		Email: dynReq.Get(fields.ByName("email")).String(),
+	}, nil
+}
+
+func (s *batchCreateServer) SendAndClose(resp *BatchCreateUsersResponse) error {
+	msg, err := marshalBatchCreateResponse(resp)
+	if err != nil {
+		return err
+	}
+	return s.ServerStream.SendMsg(msg)
+}
+
+func _UserService_BatchCreateUsers_Handler(srv interface{}, stream grpc.ServerStream) error {
+	ss := &batchCreateServer{stream}
+	resp, err := srv.(UserServiceServer).BatchCreateUsers(ss)
+	if err != nil {
+		return err
+	}
+	return ss.SendAndClose(resp)
+}
+
+// ── WatchUsers (bidi-streaming) ───────────────────────────────
+
+type watchUsersServer struct{ grpc.ServerStream }
+
+func (s *watchUsersServer) Send(resp *WatchUsersResponse) error {
+	msg, err := marshalWatchUsersResponse(resp)
+	if err != nil {
+		return err
+	}
+	return s.ServerStream.SendMsg(msg)
+}
+
+func (s *watchUsersServer) Recv() (*WatchUsersRequest, error) {
+	dynReq := dynamicpb.NewMessage(WatchUsersReqDesc)
+	if err := s.ServerStream.RecvMsg(dynReq); err != nil {
+		return nil, err
+	}
+	return &WatchUsersRequest{
+		UserId: dynReq.Get(WatchUsersReqDesc.Fields().ByName("user_id")).String(),
+	}, nil
+}
+
+func _UserService_WatchUsers_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(UserServiceServer).WatchUsers(&watchUsersServer{stream})
+}
+
+// ──────────────────────────────────────────────────────────────
 // Marshal helpers: Go structs → dynamic proto messages
 // ──────────────────────────────────────────────────────────────
 
@@ -364,6 +616,30 @@ func marshalCreateUserResponse(resp *CreateUserResponse) (proto.Message, error) 
 	if resp.User != nil {
 		userMsg := marshalUser(resp.User)
 		msg.Set(CreateUserRespDesc.Fields().ByName("user"), protoreflect.ValueOfMessage(userMsg.ProtoReflect()))
+	}
+	return msg, nil
+}
+
+func marshalBatchCreateResponse(resp *BatchCreateUsersResponse) (proto.Message, error) {
+	msg := dynamicpb.NewMessage(BatchCreateRespDesc)
+	fields := BatchCreateRespDesc.Fields()
+	msg.Set(fields.ByName("created"), protoreflect.ValueOfInt32(resp.Created))
+	if len(resp.Users) > 0 {
+		list := msg.Mutable(fields.ByName("users")).List()
+		for _, u := range resp.Users {
+			list.Append(protoreflect.ValueOfMessage(marshalUser(u).ProtoReflect()))
+		}
+	}
+	return msg, nil
+}
+
+func marshalWatchUsersResponse(resp *WatchUsersResponse) (proto.Message, error) {
+	msg := dynamicpb.NewMessage(WatchUsersRespDesc)
+	fields := WatchUsersRespDesc.Fields()
+	msg.Set(fields.ByName("event"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(resp.Event)))
+	if resp.User != nil {
+		userMsg := marshalUser(resp.User)
+		msg.Set(fields.ByName("user"), protoreflect.ValueOfMessage(userMsg.ProtoReflect()))
 	}
 	return msg, nil
 }
@@ -419,6 +695,44 @@ func (c *DemoClient) CreateUser(ctx context.Context, req *CreateUserRequest, opt
 		resp.User = dynMessageToUser(userVal.Message())
 	}
 	return resp, nil
+}
+
+// ListUsers calls user.UserService/ListUsers (server-streaming) and returns all responses.
+func (c *DemoClient) ListUsers(ctx context.Context, req *ListUsersRequest, opts ...grpc.CallOption) ([]*GetUserResponse, error) {
+	dynReq := dynamicpb.NewMessage(ListUsersReqDesc)
+	f := ListUsersReqDesc.Fields()
+	dynReq.Set(f.ByName("role_filter"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(req.RoleFilter)))
+	dynReq.Set(f.ByName("limit"), protoreflect.ValueOfInt32(req.Limit))
+
+	desc := &grpc.StreamDesc{ServerStreams: true}
+	stream, err := c.conn.NewStream(ctx, desc, "/user.UserService/ListUsers", opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.SendMsg(dynReq); err != nil {
+		return nil, err
+	}
+	if err := stream.CloseSend(); err != nil {
+		return nil, err
+	}
+
+	var results []*GetUserResponse
+	for {
+		dynResp := dynamicpb.NewMessage(GetUserRespDesc)
+		if err := stream.RecvMsg(dynResp); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		resp := &GetUserResponse{}
+		userVal := dynResp.Get(GetUserRespDesc.Fields().ByName("user"))
+		if userVal.IsValid() {
+			resp.User = dynMessageToUser(userVal.Message())
+		}
+		results = append(results, resp)
+	}
+	return results, nil
 }
 
 // dynMessageToUser converts a protoreflect.Message (the user field) to *User.

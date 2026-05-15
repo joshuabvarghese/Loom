@@ -381,6 +381,7 @@ func runProxy(cfg proxyConfig) {
 	// ── Proxy handler ─────────────────────────────────────────────────────────
 	proxyCfg := proxy.Config{
 		BackendAddr:          cfg.backendAddr,
+		ListenAddr:           cfg.listenAddr,
 		GRPCConn:             conn,
 		Reflector:            res,
 		Recorder:             rec,

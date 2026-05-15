@@ -12,6 +12,7 @@ package demo
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -102,6 +103,10 @@ func SendSampleCalls(ctx context.Context, proxyAddr string) {
 			_, err := client.CreateUser(ctx, &pb.CreateUserRequest{
 				Name: "Grace Hopper", Email: "grace@example.com",
 			})
+			return err
+		}},
+		{"ListUsers — server-streaming (all users)", func() error {
+			_, err := client.ListUsers(ctx, &pb.ListUsersRequest{})
 			return err
 		}},
 		{"GetUser notfound (NOT_FOUND)", func() error {
@@ -201,4 +206,68 @@ func (s *demoServer) CreateUser(req *pb.CreateUserRequest) (*pb.CreateUserRespon
 			CreatedAt: timestamppb.Now(),
 		},
 	}, nil
+}
+
+func (s *demoServer) ListUsers(req *pb.ListUsersRequest, stream pb.ListUsersServer) error {
+	all := []*pb.User{}
+	for _, u := range seedUsers {
+		all = append(all, u)
+	}
+	sent := 0
+	for _, u := range all {
+		if req.RoleFilter != pb.User_ROLE_UNSPECIFIED && u.Role != req.RoleFilter {
+			continue
+		}
+		if err := stream.Send(&pb.GetUserResponse{User: u}); err != nil {
+			return err
+		}
+		sent++
+		time.Sleep(80 * time.Millisecond)
+		if req.Limit > 0 && int32(sent) >= req.Limit {
+			break
+		}
+	}
+	return nil
+}
+
+func (s *demoServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.BatchCreateUsersResponse, error) {
+	var created []*pb.User
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		created = append(created, &pb.User{
+			Id:        fmt.Sprintf("batch_%d", time.Now().UnixNano()),
+			Name:      req.Name,
+			Email:     req.Email,
+			Role:      pb.User_ROLE_VIEWER,
+			CreatedAt: timestamppb.Now(),
+		})
+	}
+	return &pb.BatchCreateUsersResponse{Created: int32(len(created)), Users: created}, nil
+}
+
+func (s *demoServer) WatchUsers(stream pb.WatchUsersServer) error {
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			return nil
+		}
+		u, ok := seedUsers[req.UserId]
+		if !ok {
+			u = &pb.User{
+				Id:    req.UserId,
+				Name:  "Watched " + req.UserId,
+				Email: req.UserId + "@demo.example",
+				Role:  pb.User_ROLE_VIEWER,
+			}
+		}
+		if sendErr := stream.Send(&pb.WatchUsersResponse{
+			Event: pb.WatchEvent_CREATED,
+			User:  u,
+		}); sendErr != nil {
+			return sendErr
+		}
+	}
 }

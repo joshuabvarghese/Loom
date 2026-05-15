@@ -9,6 +9,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -23,12 +24,11 @@ import (
 )
 
 // userServer implements pb.UserServiceServer.
-// NOTE: method signatures must match the interface in gen/gen.go exactly.
-// The gen package interface does NOT include context.Context (it's stripped
-// in the dynamic handler shim — see gen.go _UserService_GetUser_Handler).
 type userServer struct {
 	pb.UnimplementedUserServiceServer
 }
+
+// ── Unary ────────────────────────────────────────────────────────────────────
 
 func (s *userServer) GetUser(req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
 	fmt.Printf("[backend] GetUser  user_id=%q\n", req.UserId)
@@ -65,6 +65,103 @@ func (s *userServer) CreateUser(req *pb.CreateUserRequest) (*pb.CreateUserRespon
 	}, nil
 }
 
+// ── Server-streaming: ListUsers ──────────────────────────────────────────────
+
+// sampleUsers is the fixed roster the test server streams.
+var sampleUsers = []*pb.User{
+	{Id: "u1", Name: "Ada Lovelace", Email: "ada@example.com", Role: pb.User_ROLE_ADMIN},
+	{Id: "u2", Name: "Grace Hopper", Email: "grace@example.com", Role: pb.User_ROLE_EDITOR},
+	{Id: "u3", Name: "Alan Turing", Email: "alan@example.com", Role: pb.User_ROLE_VIEWER},
+	{Id: "u4", Name: "Dorothy Vaughan", Email: "dorothy@example.com", Role: pb.User_ROLE_EDITOR},
+	{Id: "u5", Name: "Margaret Hamilton", Email: "margaret@example.com", Role: pb.User_ROLE_ADMIN},
+}
+
+func (s *userServer) ListUsers(req *pb.ListUsersRequest, stream pb.ListUsersServer) error {
+	fmt.Printf("[backend] ListUsers  role_filter=%v limit=%d\n", req.RoleFilter, req.Limit)
+	sent := 0
+	for _, u := range sampleUsers {
+		if req.RoleFilter != pb.User_ROLE_UNSPECIFIED && u.Role != req.RoleFilter {
+			continue
+		}
+		if err := stream.Send(&pb.GetUserResponse{User: u}); err != nil {
+			return err
+		}
+		sent++
+		if req.Limit > 0 && int32(sent) >= req.Limit {
+			break
+		}
+		// Small delay so the streaming behaviour is visible in the UI.
+		time.Sleep(50 * time.Millisecond)
+	}
+	fmt.Printf("[backend] ListUsers  sent %d user(s)\n", sent)
+	return nil
+}
+
+// ── Client-streaming: BatchCreateUsers ───────────────────────────────────────
+
+func (s *userServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.BatchCreateUsersResponse, error) {
+	fmt.Printf("[backend] BatchCreateUsers  receiving...\n")
+	var created []*pb.User
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if req.Name == "" || req.Email == "" {
+			return nil, status.Error(codes.InvalidArgument, "name and email are required")
+		}
+		u := &pb.User{
+			Id:        fmt.Sprintf("usr_%d", time.Now().UnixNano()),
+			Name:      req.Name,
+			Email:     req.Email,
+			Role:      pb.User_ROLE_VIEWER,
+			CreatedAt: timestamppb.Now(),
+		}
+		created = append(created, u)
+		fmt.Printf("[backend] BatchCreateUsers  created %q\n", u.Name)
+	}
+	return &pb.BatchCreateUsersResponse{
+		Created: int32(len(created)),
+		Users:   created,
+	}, nil
+}
+
+// ── Bidi-streaming: WatchUsers ────────────────────────────────────────────────
+
+func (s *userServer) WatchUsers(stream pb.WatchUsersServer) error {
+	fmt.Printf("[backend] WatchUsers  connected\n")
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("[backend] WatchUsers  watching user_id=%q\n", req.UserId)
+
+		// Echo back a synthetic "created" event for the requested user.
+		resp := &pb.WatchUsersResponse{
+			Event: pb.WatchEvent_CREATED,
+			User: &pb.User{
+				Id:        req.UserId,
+				Name:      "Watched User",
+				Email:     fmt.Sprintf("%s@example.com", req.UserId),
+				Role:      pb.User_ROLE_VIEWER,
+				CreatedAt: timestamppb.Now(),
+			},
+		}
+		if sendErr := stream.Send(resp); sendErr != nil {
+			return sendErr
+		}
+	}
+}
+
+// ── main ─────────────────────────────────────────────────────────────────────
+
 func main() {
 	addr := flag.String("addr", ":50051", "listen address")
 	flag.Parse()
@@ -80,7 +177,7 @@ func main() {
 
 	fmt.Printf("🚀 test backend on %s\n", *addr)
 	fmt.Printf("   service: user.UserService\n")
-	fmt.Printf("   methods: GetUser, CreateUser\n\n")
+	fmt.Printf("   methods: GetUser, CreateUser, ListUsers, BatchCreateUsers, WatchUsers\n\n")
 
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)

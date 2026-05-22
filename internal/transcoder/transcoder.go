@@ -22,6 +22,13 @@ import (
 
 const grpcHeaderSize = 5
 
+// MaxFrameSize is the largest gRPC message body Loom will allocate memory
+// for. A raw uint32 from the wire can be up to ~4 GB; without a ceiling a
+// malformed or malicious frame causes an OOM before the read even fails.
+// 32 MB is generous for any real gRPC payload while remaining safe in
+// sidecar deployments.
+const MaxFrameSize = 32 * 1024 * 1024 // 32 MB
+
 // Frame is a single decoded gRPC message.
 type Frame struct {
 	// Raw is the original bytes (header + body) so they can be forwarded unchanged.
@@ -93,6 +100,15 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 
 	compressed := header[0] == 1
 	msgLen := binary.BigEndian.Uint32(header[1:5])
+
+	// Guard against enormous allocations from malformed or malicious frames.
+	if msgLen > MaxFrameSize {
+		return nil, fmt.Errorf(
+			"frame too large: %d bytes exceeds MaxFrameSize (%d); "+
+				"use a custom build with a higher MaxFrameSize if needed",
+			msgLen, MaxFrameSize,
+		)
+	}
 
 	// Read the protobuf payload
 	body := make([]byte, msgLen)

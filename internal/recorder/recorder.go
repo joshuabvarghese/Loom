@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -180,8 +181,9 @@ func (s *Store) ByID(id string) (*CallRecord, bool) {
 
 // EventHub broadcasts CallRecord events to all active SSE subscribers.
 type EventHub struct {
-	mu          sync.RWMutex
-	subscribers map[chan *CallRecord]struct{}
+	mu            sync.RWMutex
+	subscribers   map[chan *CallRecord]struct{}
+	droppedEvents atomic.Int64 // total events dropped due to slow subscribers
 }
 
 // NewEventHub creates a new hub.
@@ -208,8 +210,15 @@ func (h *EventHub) Unsubscribe(ch chan *CallRecord) {
 	close(ch)
 }
 
+// DroppedEvents returns the total number of events silently dropped because a
+// subscriber was too slow to consume them. Expose this via /api/stats or a
+// Prometheus counter if you need alerting on UI lag.
+func (h *EventHub) DroppedEvents() int64 {
+	return h.droppedEvents.Load()
+}
+
 // Publish sends a call record to all subscribers (non-blocking; slow subscribers
-// get their oldest events dropped).
+// get their oldest events dropped and the drop is counted).
 func (h *EventHub) Publish(r *CallRecord) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -217,7 +226,10 @@ func (h *EventHub) Publish(r *CallRecord) {
 		select {
 		case ch <- r:
 		default:
-			// subscriber too slow — drop rather than block
+			// subscriber too slow — drop rather than block the proxy,
+			// but track it so developers can diagnose a mysteriously
+			// incomplete call stream in the UI.
+			h.droppedEvents.Add(1)
 		}
 	}
 }

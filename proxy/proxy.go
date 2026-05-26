@@ -319,11 +319,21 @@ func (h *Handler) serveStreaming(
 		return
 	}
 
+	// mutatedMu guards all writes to call.Mutated, which can be set from
+	// both the request-header mutation path (this goroutine) and the
+	// request-body mutation goroutine concurrently in bidi streaming calls.
+	var mutatedMu sync.Mutex
+	setMutated := func() {
+		mutatedMu.Lock()
+		call.Mutated = true
+		mutatedMu.Unlock()
+	}
+
 	// ── Apply header mutations ────────────────────────────────────────────────
 	upReqHeaders := r.Header.Clone()
 	if h.cfg.MetaMutator != nil {
 		if h.cfg.MetaMutator.Apply(call.Method, "request", upReqHeaders) {
-			call.Mutated = true
+			setMutated()
 			metrics.RecordMutation(call.Method, "request-header")
 		}
 	}
@@ -336,6 +346,13 @@ func (h *Handler) serveStreaming(
 
 	var reqMu sync.Mutex
 	var reqFrameIdx int
+
+	// reqCancel is used to signal the request-body goroutine to stop when the
+	// backend round-trip fails. Without this, the goroutine can block inside
+	// StreamFrames waiting to write to a pipe whose read-end is already closed,
+	// leaking until the client closes the connection.
+	reqCtx, reqCancel := context.WithCancel(ctx)
+	defer reqCancel()
 
 	go func() {
 		defer reqPipeW.Close()
@@ -352,26 +369,41 @@ func (h *Handler) serveStreaming(
 			go func() {
 				defer wg.Done()
 				_, _ = io.Copy(reqPipeW, pr)
+				// When reqPipeW closes (e.g. on backend error), drain pr so
+				// the StreamFrames goroutine writing to pw is not permanently
+				// blocked.
+				_, _ = io.Copy(io.Discard, pr)
 			}()
 
 			frameCh := transcoder.StreamFrames(r.Body, pw, methodInfo.Input)
-			for f := range frameCh {
-				if f.Err != nil {
-					slogpkg.Debug(ctx, "request frame decode error", "err", f.Err)
-					continue
+			for {
+				select {
+				case f, ok := <-frameCh:
+					if !ok {
+						pw.Close()
+						wg.Wait()
+						return
+					}
+					if f.Err != nil {
+						slogpkg.Debug(ctx, "request frame decode error", "err", f.Err)
+						continue
+					}
+					reqMu.Lock()
+					idx := reqFrameIdx
+					reqFrameIdx++
+					reqMu.Unlock()
+					call.Request = append(call.Request, recpkg.FrameRecord{
+						Index: idx,
+						Raw:   f.Raw,
+						JSON:  f.JSON,
+					})
+				case <-reqCtx.Done():
+					// Backend failed or context cancelled; stop consuming.
+					pw.CloseWithError(reqCtx.Err())
+					wg.Wait()
+					return
 				}
-				reqMu.Lock()
-				idx := reqFrameIdx
-				reqFrameIdx++
-				reqMu.Unlock()
-				call.Request = append(call.Request, recpkg.FrameRecord{
-					Index: idx,
-					Raw:   f.Raw,
-					JSON:  f.JSON,
-				})
 			}
-			pw.Close()
-			wg.Wait()
 		} else {
 			// No descriptor — pipe raw bytes through and record them.
 			buf := make([]byte, 32*1024)
@@ -439,6 +471,7 @@ func (h *Handler) serveStreaming(
 	}
 
 	if tripErr != nil {
+		reqCancel() // stop the request-body goroutine before closing the pipe
 		reqPipeR.CloseWithError(tripErr)
 		h.handleTripErr(ctx, w, call, tripErr, start)
 		return

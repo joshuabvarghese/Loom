@@ -155,27 +155,6 @@ func applyConfigDefaults(
 	listenAddr, backendAddr, sessionName, logFile, mutateFile, protoDir, uiAddr *string,
 	verbose, noColor *bool,
 ) {
-	type strOverride struct{ flag, val *string }
-	for _, o := range []strOverride{
-		{listenAddr, &cfg.Listen},
-		{backendAddr, &cfg.Backend},
-		{sessionName, &cfg.Session},
-		{logFile, &cfg.Log.File},
-		{mutateFile, &cfg.Mutate.File},
-		{protoDir, &cfg.ProtoDir},
-		{uiAddr, &cfg.UI},
-	} {
-		if *o.val != "" {
-			// Only apply when the flag was not explicitly set on the command line.
-			// We detect this by checking if a flag with that default was visited.
-			// Simpler approach: just apply the file value; the flag parse already
-			// ran, and an explicit flag will have overwritten the default in the
-			// *string pointer. So we only apply if the pointer still equals the
-			// built-in default — but defaults vary. Instead we track via flag.Visit.
-		}
-		_ = o // handled below
-	}
-
 	// Use flag.Visit to collect explicitly-set flag names.
 	set := make(map[string]bool)
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })

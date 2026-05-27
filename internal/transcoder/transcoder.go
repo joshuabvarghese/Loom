@@ -11,6 +11,7 @@ package transcoder
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -48,7 +49,7 @@ func DecodeStream(r io.Reader, msgDesc *desc.MessageDescriptor) ([]*Frame, error
 	var frames []*Frame
 	for {
 		frame, err := readFrame(r, msgDesc)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -75,7 +76,7 @@ func StreamFrames(r io.Reader, w io.Writer, msgDesc *desc.MessageDescriptor) <-c
 				}
 				ch <- frame
 			}
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return
 			}
 			if err != nil {
@@ -92,7 +93,7 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 	// Read the 5-byte gRPC envelope header
 	header := make([]byte, grpcHeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil, io.EOF
 		}
 		return nil, fmt.Errorf("reading frame header: %w", err)

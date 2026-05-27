@@ -664,16 +664,6 @@ func ms(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000.0
 }
 
-func proxyAddr(r *http.Request) string {
-	h := r.Host
-	if h == "" {
-		return "localhost:9999"
-	}
-	if strings.HasPrefix(h, ":") {
-		return "localhost" + h
-	}
-	return h
-}
 
 func printCall(call *recpkg.CallRecord, color bool) {
 	green := "\033[32m"

@@ -27,7 +27,6 @@ type SessionInfo struct {
 
 // Store combines persistent NDJSON storage with a live Recorder.
 type Store struct {
-	path      string
 	sessionName string
 	Recorder  *recorder.Recorder
 	file      *os.File
@@ -65,7 +64,6 @@ func New(sessionName string) (*Store, error) {
 	}
 
 	s := &Store{
-		path:        path,
 		sessionName: sessionName,
 		Recorder:    rec,
 		file:        f,

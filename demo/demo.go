@@ -12,7 +12,6 @@ package demo
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
@@ -75,8 +74,7 @@ func SendSampleCalls(ctx context.Context, proxyAddr string) {
 	// Brief pause so the proxy is fully ready
 	time.Sleep(300 * time.Millisecond)
 
-	//nolint:staticcheck // grpc.Dial still works in v1.61; upgrade to grpc.NewClient when bumping to v1.63+
-	conn, err := grpc.Dial(proxyAddr, //nolint:staticcheck
+	conn, err := grpc.NewClient(proxyAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {

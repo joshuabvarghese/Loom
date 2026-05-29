@@ -1,19 +1,9 @@
-// Package proxy implements the gRPC L7 reverse proxy at the heart of Loom.
+// Package proxy is the HTTP/2 reverse proxy that sits between the gRPC client
+// and backend. It copies frames in both directions, decodes them via the
+// reflector/transcoder, and hands the results to the recorder.
 //
-// It accepts any gRPC call (identified by its HTTP/2 :path header), forwards
-// it to the configured backend, and records the decoded request/response for
-// the Web Inspector.
-//
-// Supported RPC types:
-//   - Unary             — single request, single response
-//   - Server-streaming  — single request, multiple response frames
-//   - Client-streaming  — multiple request frames, single response
-//   - Bidirectional     — multiple request frames, multiple response frames
-//
-// Features:
-//   - Circuit breaker around backend RoundTrip (sheds load on repeated failures)
-//   - Prometheus metrics (requests, latency, active sessions, mutations)
-//   - Structured JSON logging with per-call request_id propagation
+// All four gRPC stream types are handled: unary, server-streaming,
+// client-streaming, and bidi. A circuit breaker wraps each backend round-trip.
 package proxy
 
 import (
@@ -275,22 +265,43 @@ func (h *Handler) serveUnary(
 	}
 
 	// ── Write response back to client ─────────────────────────────────────────
+	// gRPC allows "trailers-only" responses where grpc-status arrives in the initial
+	// HEADERS frame (resp.Header) rather than in a trailing HEADERS frame (resp.Trailer).
+	// Go's http2.Transport puts these in resp.Header. We must forward grpc-status and
+	// grpc-message as HTTP/2 trailers regardless, so we normalise them here.
+	grpcTrailers := make(map[string][]string)
+	for _, key := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
+		if vs := resp.Trailer.Values(key); len(vs) > 0 {
+			grpcTrailers[key] = vs
+		} else if vs := resp.Header.Values(key); len(vs) > 0 {
+			grpcTrailers[key] = vs
+			resp.Header.Del(key) // don't forward as a regular header
+		}
+	}
+	for k, vs := range resp.Trailer {
+		if _, already := grpcTrailers[k]; !already {
+			grpcTrailers[k] = vs
+		}
+	}
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
+	// Pre-declare all trailer keys so net/http emits them in the trailing HEADERS frame.
+	for k := range grpcTrailers {
+		w.Header().Add("Trailer", k)
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
-
+	// Write trailers via http.TrailerPrefix (works after WriteHeader in HTTP/2).
+	for k, vs := range grpcTrailers {
+		for _, v := range vs {
+			w.Header().Add(http.TrailerPrefix+k, v)
+		}
+	}
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
-	}
-	// Trailers must be set after WriteHeader.
-	for k, vs := range resp.Trailer {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
 	}
 
 	h.finishCall(ctx, call, resp, start)
@@ -548,10 +559,23 @@ func (h *Handler) serveStreaming(
 	}
 
 	// Trailers arrive after the body is fully consumed.
+	// Handle both regular trailers and gRPC "trailers-only" responses where
+	// grpc-status arrives in the initial resp.Header rather than resp.Trailer.
+	for _, key := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
+		if vs := resp.Header.Values(key); len(vs) > 0 && len(resp.Trailer.Values(key)) == 0 {
+			for _, v := range vs {
+				w.Header().Add(http.TrailerPrefix+key, v)
+			}
+			continue
+		}
+	}
 	for k, vs := range resp.Trailer {
 		for _, v := range vs {
-			w.Header().Add(k, v)
+			w.Header().Add(http.TrailerPrefix+k, v)
 		}
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 
 	h.finishCall(ctx, call, resp, start)
@@ -638,9 +662,12 @@ func newH2Transport(useTLS, skipVerify bool) *http2.Transport {
 
 func writeGRPCError(w http.ResponseWriter, code codes.Code, msg string) {
 	w.Header().Set("Content-Type", "application/grpc")
-	w.Header().Set("grpc-status", fmt.Sprintf("%d", code))
-	w.Header().Set("grpc-message", msg)
+	// gRPC spec requires grpc-status and grpc-message in the trailing HEADERS frame.
+	// Pre-declare them so net/http knows they are trailers, then set via TrailerPrefix.
+	w.Header().Set("Trailer", "Grpc-Status, Grpc-Message")
 	w.WriteHeader(http.StatusOK)
+	w.Header().Set(http.TrailerPrefix+"Grpc-Status", fmt.Sprintf("%d", code))
+	w.Header().Set(http.TrailerPrefix+"Grpc-Message", msg)
 }
 
 func grpcCodeName(code string) string {

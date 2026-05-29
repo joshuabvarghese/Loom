@@ -1,106 +1,71 @@
-# Contributing to Loom
+# Contributing
 
-Thank you for considering a contribution! Loom is a small, focused tool and we value quality over quantity.
+Thanks for taking a look. Loom is a small tool — I try to keep the scope tight, but good PRs are always welcome.
 
-## Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/joshuabvarghese/loom
 cd loom
-make build          # build loom + testserver
-make test           # run the full test suite
-make run-dev        # start testserver + loom with -demo
+make build        # builds bin/loom and bin/testserver
+make test         # run the full test suite
+make run-demo     # start in demo mode, open http://localhost:9998
 ```
 
-## Project Layout
-
-```
-loom/
-├── main.go                    # CLI flags, startup, replay mode
-├── proxy/handler.go           # HTTP/2 reverse proxy (unary + streaming)
-├── internal/
-│   ├── recorder/              # Ring buffer, SSE hub, NDJSON log
-│   ├── store/                 # Persistent session storage (~/.loom/)
-│   ├── reflector/             # gRPC Server Reflection client + cache
-│   ├── transcoder/            # gRPC wire format ↔ JSON
-│   ├── mutator/               # Rule-based JSON body mutation
-│   ├── metadata/              # Rule-based gRPC header mutation
-│   └── webui/                 # Embedded HTTP server + single-file SPA
-├── demo/                      # Embedded demo backend (-demo mode)
-└── testserver/                # Standalone test gRPC server
-```
-
-## Development Guidelines
-
-### Code Style
-
-- Run `make fmt` before committing (`gofmt -w .`)
-- Run `make vet` to catch common errors
-- Run `make lint` for full linting (requires `golangci-lint`)
-- Every exported function should have a doc comment
-
-### Testing
-
-- All new functionality must have unit tests
-- Tests go in `_test.go` files in the same package (use `package foo_test` for black-box tests)
-- Run with the race detector: `make test-race`
-- Aim to keep coverage above 70% per package
-
-### Commits
-
-Use [Conventional Commits](https://www.conventionalcommits.org/) format:
-
-```
-feat: add -max-calls flag to cap ring buffer size
-fix: nil pointer in handleStreaming when reflector is off
-docs: add mutation rules example for auth injection
-test: add TestStore_AppendsDontDuplicate
-```
-
-This drives the automated changelog in GoReleaser.
-
-### Pull Requests
-
-1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
-2. Make your changes with tests
-3. Run `make test fmt vet` — all must pass
-4. Open a PR against `main` with a clear description
-
-### What We're Looking For
-
-Great ideas for contributions:
-- **New mutation capabilities** — e.g., delay injection, response stubbing
-- **UI improvements** — filtering, syntax highlighting, diff view
-- **Protocol support** — gRPC-Web, Connect protocol
-- **Performance** — the proxy hot path must stay allocation-light
-
-Things we'll decline:
-- Breaking the single-binary distribution model
-- Adding mandatory external dependencies at runtime
-- Features that belong in a service mesh, not a dev tool
-
-## Running the Full Dev Setup
+For the full dev loop with a live backend:
 
 ```bash
 # Terminal 1
-make run-testserver   # starts gRPC backend on :50051
+make run-testserver   # gRPC backend on :50051
 
-# Terminal 2  
-make run              # starts loom on :9999, UI on :9998
+# Terminal 2
+make run              # loom on :9999, UI on :9998
 
 # Terminal 3
-make smoke            # end-to-end grpcurl test (requires grpcurl)
+make smoke            # end-to-end grpcurl test (needs grpcurl installed)
 ```
 
-Or use demo mode (no external server needed):
-```bash
-make run-demo
+## Code style
+
+- `make fmt` before committing (`gofmt -w .`)
+- `make vet` to catch obvious issues
+- Exported types and functions need doc comments
+- Keep the proxy hot path allocation-light — no per-request heap allocations in the frame read/write loops
+
+## Tests
+
+- New behaviour needs a test
+- Black-box tests go in `package foo_test`, internal ones in `package foo`
+- Run with the race detector before opening a PR: `make test-race`
+- The integration tests in `proxy/proxy_integration_test.go` spin up a real gRPC server and proxy — use those as a pattern for end-to-end coverage
+
+## Commits
+
+I use [Conventional Commits](https://www.conventionalcommits.org/) loosely:
+
+```
+feat: add -max-calls flag to cap ring buffer size
+fix: nil deref in serveStreaming when reflector is disabled
+docs: document mutation rule glob syntax
+test: add round-trip test for bidi streaming with mutations
 ```
 
-## Release Process (maintainers only)
+## Pull requests
 
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-# GitHub Actions picks up the tag and runs GoReleaser
-```
+1. Fork, branch off `main`: `git checkout -b fix/my-thing`
+2. Make the change, add tests
+3. `make test fmt vet` — all must pass
+4. Open a PR with a short description of what and why
+
+## What I'm interested in
+
+- Mutation features — delay injection, response stubbing, conditional rules
+- UI improvements — call filtering, diff view between replays, syntax highlighting
+- gRPC-Web / Connect protocol support
+- Performance improvements to the proxy hot path
+
+## What I'll probably decline
+
+- Anything that breaks the single-binary distribution
+- Runtime dependencies that need to be installed separately
+- Features that belong in a service mesh rather than a local dev tool

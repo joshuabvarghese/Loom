@@ -1,33 +1,34 @@
-# Security Policy
+# Security
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported |
+| Version | Maintained |
 |---------|-----------|
-| 0.1.x   | ✅ Yes     |
+| 0.1.x   | ✅         |
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Please **do not** open a public GitHub issue for security vulnerabilities.
+Please don't open a public issue for security bugs.
 
-Instead, email **joshuavarghese.jv@gmail.com** with:
+Email **joshuavarghese.jv@gmail.com** with:
 
-- A description of the vulnerability
+- What the vulnerability is
 - Steps to reproduce
-- Potential impact
-- Any suggested mitigations
+- What you think the impact is
+- A suggested fix if you have one
 
-You can expect an initial response within **48 hours** and a full assessment within **7 days**.
+I'll reply within 48 hours and aim to have a fix out within a week.
 
-## Security Model
+## Security model
 
-Loom is a **local development tool** designed to run on a developer's machine or in a trusted network environment. Key points:
+Loom is a local development tool. It's not designed to be hardened for production.
 
-- **Not designed for production exposure** — Loom's proxy and Web Inspector ports should not be exposed to the public internet.
-- **No authentication** — The Web Inspector (`-ui` port) has no authentication. Bind it to `localhost` only.
-- **Mutation rules** (`-mutate`) can modify gRPC payloads. Keep rule files access-controlled.
-- **TLS passthrough** — When using `-backend-tls`, Loom connects to the backend using TLS but the client-to-Loom leg is plaintext H2C. Do not use Loom as a TLS terminator in production.
+A few things to be aware of:
 
-## Dependency Scanning
+**No authentication.** The Web Inspector and the proxy port have no auth. Bind them to `localhost` — the defaults do this. If you're running on a shared machine or in a container, be explicit: `-listen 127.0.0.1:9999 -ui 127.0.0.1:9998`.
 
-Dependencies are pinned in `go.sum` and verified with `go mod verify`. Dependabot is enabled to flag known CVEs in transitive dependencies.
+**Mutation rules can modify payloads.** The `-mutate` flag applies rules to requests and responses. Keep rule files out of version control if they contain real credentials.
+
+**Client-to-Loom is plaintext H2C.** When you use `-backend-tls`, Loom connects to your backend over TLS, but the client-to-Loom leg is unencrypted HTTP/2. That's fine on localhost. Don't put Loom in a production traffic path.
+
+**Call history is written to disk.** Sessions go to `~/.loom/sessions/`. If you're proxying services that handle sensitive data, be aware the payloads are stored there in plaintext NDJSON.

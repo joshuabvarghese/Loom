@@ -1,28 +1,87 @@
-# Build outputs
+# ── Binaries ──────────────────────────────────────────────────────────────────
 bin/
+loom
+testserver
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ 
+# ── Build output ──────────────────────────────────────────────────────────────
 dist/
-
-# Test artifacts
+*.tar.gz
+*.zip
+ 
+# ── Go ────────────────────────────────────────────────────────────────────────
+vendor/
+*.test
+*.out
 coverage.out
 coverage.html
-
-# Editor artifacts
-.DS_Store
-.idea/
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+ 
+# ── Loom runtime data ─────────────────────────────────────────────────────────
+.loom/
+~/.loom/
+ 
+# ── Local config overrides ────────────────────────────────────────────────────
+# Commit loom.toml (example config), ignore personal overrides
+loom.local.toml
+*.local.toml
+ 
+# ── Docker ────────────────────────────────────────────────────────────────────
+.docker/
+ 
+# ── Editors ───────────────────────────────────────────────────────────────────
+ 
+# VS Code
 .vscode/
+*.code-workspace
+ 
+# JetBrains (GoLand, IntelliJ)
+.idea/
+*.iml
+*.iws
+*.ipr
+ 
+# Vim / Neovim
 *.swp
 *.swo
 *~
-
-# Session data (user-specific)
-*.jsonl
-*.ndjson
-loom.log
-
-# Secrets / local overrides
-.env
-.env.*
-!.env.example
-
-# OS artifacts
+.netrwhist
+tags
+ 
+# Emacs
+*~
+\#*\#
+.\#*
+ 
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+ 
+# ── OS ────────────────────────────────────────────────────────────────────────
+ 
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ 
+# Windows
 Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+ 
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*

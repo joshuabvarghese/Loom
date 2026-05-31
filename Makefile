@@ -5,7 +5,7 @@ BINARY     = bin/loom
 TESTSERVER = bin/testserver
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS    = -s -w -X main.Version=$(VERSION)
-GOFLAGS    =
+GOFLAGS    = -mod=vendor
 
 all: build build-testserver
 
@@ -49,8 +49,7 @@ docker-demo: docker-build
 tidy:
 	go mod tidy
 
-vendor: ## (optional) create a local vendor/ directory
-	go mod tidy
+vendor:
 	go mod vendor
 
 clean:

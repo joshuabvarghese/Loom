@@ -73,7 +73,7 @@ func LoadRules(path string) (*Engine, error) {
 		Method    string          `json:"method"`
 		Direction string          `json:"direction"`
 		Headers   *HeaderRule     `json:"headers,omitempty"`
-		Set       json.RawMessage `json:"set,omitempty"`   // body rule field — ignored here
+		Set       json.RawMessage `json:"set,omitempty"`    // body rule field — ignored here
 		Delete    json.RawMessage `json:"delete,omitempty"` // body rule field — ignored here
 	}
 

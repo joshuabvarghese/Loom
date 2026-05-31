@@ -204,7 +204,7 @@ func (h *Handler) serveUnary(
 	var resp *http.Response
 	doRoundTrip := func() error {
 		var rtErr error
-		resp, rtErr = transport.RoundTrip(upReq)
+		resp, rtErr = transport.RoundTrip(upReq) //nolint:bodyclose // closed via defer resp.Body.Close() below
 		return rtErr
 	}
 
@@ -469,7 +469,7 @@ func (h *Handler) serveStreaming(
 	var resp *http.Response
 	doRoundTrip := func() error {
 		var rtErr error
-		resp, rtErr = transport.RoundTrip(upReq)
+		resp, rtErr = transport.RoundTrip(upReq) //nolint:bodyclose // closed via defer resp.Body.Close() below
 		return rtErr
 	}
 

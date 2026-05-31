@@ -21,7 +21,7 @@ linters-settings:
     simplify: true
 
   misspell:
-    locale: UK
+    locale: US
 
   errcheck:
     exclude-functions:

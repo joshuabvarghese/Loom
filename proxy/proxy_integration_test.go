@@ -117,21 +117,6 @@ func awaitCall(t *testing.T, ch <-chan *recorder.CallRecord) *recorder.CallRecor
 	}
 }
 
-func awaitNCalls(t *testing.T, ch <-chan *recorder.CallRecord, n int) []*recorder.CallRecord {
-	t.Helper()
-	calls := make([]*recorder.CallRecord, 0, n)
-	deadline := time.After(10 * time.Second)
-	for len(calls) < n {
-		select {
-		case call := <-ch:
-			calls = append(calls, call)
-		case <-deadline:
-			t.Fatalf("timed out waiting for %d calls; got %d", n, len(calls))
-		}
-	}
-	return calls
-}
-
 // ── Unary tests ───────────────────────────────────────────────────────────────
 
 func TestIntegration_UnaryCallPassthrough(t *testing.T) {

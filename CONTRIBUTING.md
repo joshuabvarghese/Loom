@@ -34,7 +34,7 @@ make smoke            # end-to-end grpcurl test (needs grpcurl installed)
 
 ## Tests
 
-- New behaviour needs a test
+- New behavior needs a test
 - Black-box tests go in `package foo_test`, internal ones in `package foo`
 - Run with the race detector before opening a PR: `make test-race`
 - The integration tests in `proxy/proxy_integration_test.go` spin up a real gRPC server and proxy — use those as a pattern for end-to-end coverage

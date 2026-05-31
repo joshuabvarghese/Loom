@@ -71,7 +71,7 @@ func New(conn *grpc.ClientConn) *Reflector {
 }
 
 // WithCacheTTL overrides the descriptor cache TTL. Pass 0 to disable
-// expiry (equivalent to the old always-cached behaviour).
+// expiry (equivalent to the old always-cached behavior).
 func (r *Reflector) WithCacheTTL(ttl time.Duration) *Reflector {
 	r.cacheTTL = ttl
 	return r
@@ -140,7 +140,7 @@ func (r *Reflector) Resolve(ctx context.Context, fullPath string) (*MethodInfo, 
 }
 
 // refreshCache re-fetches the descriptor for fullPath and updates the cache.
-// Called in a goroutine for stale-while-revalidate behaviour.
+// Called in a goroutine for stale-while-revalidate behavior.
 func (r *Reflector) refreshCache(fullPath string) {
 	parts := strings.SplitN(strings.TrimPrefix(fullPath, "/"), "/", 2)
 	if len(parts) != 2 {

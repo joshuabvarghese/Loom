@@ -91,7 +91,7 @@ func (s *userServer) ListUsers(req *pb.ListUsersRequest, stream pb.ListUsersServ
 		if req.Limit > 0 && int32(sent) >= req.Limit {
 			break
 		}
-		// Small delay so the streaming behaviour is visible in the UI.
+		// Small delay so the streaming behavior is visible in the UI.
 		time.Sleep(50 * time.Millisecond)
 	}
 	fmt.Printf("[backend] ListUsers  sent %d user(s)\n", sent)

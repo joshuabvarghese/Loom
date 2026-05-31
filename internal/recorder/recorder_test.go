@@ -247,10 +247,10 @@ func TestRecorder_New_NoLogFile(t *testing.T) {
 		t.Fatalf("New() with empty path should not error: %v", err)
 	}
 	if rec.Store == nil {
-		t.Error("Store should be initialised")
+		t.Error("Store should be initialized")
 	}
 	if rec.Hub == nil {
-		t.Error("Hub should be initialised")
+		t.Error("Hub should be initialized")
 	}
 	_ = rec.Close()
 }

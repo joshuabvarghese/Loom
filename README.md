@@ -83,7 +83,7 @@ Output:
   -session                  default           Session name (affects history file)
   -log                      ""                Write calls to an NDJSON file too
   -verbose                                    Debug logging
-  -no-color                                   Disable colour output
+  -no-color                                   Disable color output
 
 Mutation:
   -mutate                   ""                Path to a JSON mutation rules file

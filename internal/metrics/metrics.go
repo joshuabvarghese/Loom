@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	// proxyRequestsTotal counts completed RPC calls, labelled by gRPC method
+	// proxyRequestsTotal counts completed RPC calls, labeled by gRPC method
 	// path and gRPC status name (e.g. "OK", "UNAVAILABLE").
 	proxyRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -35,7 +35,7 @@ var (
 	)
 
 	// proxyLatencyMs measures end-to-end proxy latency in milliseconds,
-	// labelled by gRPC method path.
+	// labeled by gRPC method path.
 	proxyLatencyMs = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "loom",
@@ -57,7 +57,7 @@ var (
 	)
 
 	// mutationsTotal counts calls where at least one mutation rule fired,
-	// labelled by method and direction ("request" or "response").
+	// labeled by method and direction ("request" or "response").
 	mutationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "loom",

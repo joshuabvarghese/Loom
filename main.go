@@ -55,7 +55,7 @@ func main() {
 	listenAddr := flag.String("listen", ":9999", "gRPC proxy listen address (point your client here)")
 	backendAddr := flag.String("backend", "localhost:50051", "backend gRPC server address")
 	verbose := flag.Bool("verbose", false, "print extra debug info")
-	noColor := flag.Bool("no-color", false, "disable ANSI colour output")
+	noColor := flag.Bool("no-color", false, "disable ANSI color output")
 	backendTLS := flag.Bool("backend-tls", false, "connect to backend with TLS")
 	backendTLSSkip := flag.Bool("backend-tls-skip-verify", false, "skip TLS certificate verification (insecure)")
 	sessionName := flag.String("session", "default", "session name — history saved to ~/.loom/sessions/<name>.jsonl")

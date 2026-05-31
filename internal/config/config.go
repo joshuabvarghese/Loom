@@ -89,7 +89,7 @@ func Load(path string) (*File, error) {
 		default:
 			// Fallback: try JSON (convenient for programmatic generation).
 			if err := json.Unmarshal(data, &f); err != nil {
-				return nil, fmt.Errorf("parsing config %q (unrecognised extension, tried JSON): %w", c, err)
+				return nil, fmt.Errorf("parsing config %q (unrecognized extension, tried JSON): %w", c, err)
 			}
 		}
 		return &f, nil

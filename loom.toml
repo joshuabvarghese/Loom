@@ -33,7 +33,7 @@ backend_tls_skip_verify = false
 # Extra debug output.
 verbose = false
 
-# Turn off ANSI colour.
+# Turn off ANSI color.
 no_color = false
 
 [mutate]

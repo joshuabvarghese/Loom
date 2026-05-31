@@ -12,6 +12,7 @@ package proxy_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -93,7 +94,7 @@ func startProxy(t *testing.T, backendAddr string, mut *mutator.Engine, cb *circu
 	return lis.Addr().String(), ch
 }
 
-// demoClient returns a DemoClient dialled at addr (uses dynamic proto).
+// demoClient returns a DemoClient dialed at addr (uses dynamic proto).
 func demoClient(t *testing.T, addr string) *pb.DemoClient {
 	t.Helper()
 	conn, err := grpc.NewClient(addr,
@@ -395,7 +396,7 @@ func TestIntegration_BidiStreaming_WatchUsers(t *testing.T) {
 	for {
 		dynResp := dynamicpb.NewMessage(pb.WatchUsersRespDesc)
 		if err := stream.RecvMsg(dynResp); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			t.Fatalf("RecvMsg: %v", err)
@@ -562,7 +563,7 @@ func (s *testUserServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb
 	var users []*pb.User
 	for {
 		req, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -581,7 +582,7 @@ func (s *testUserServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb
 func (s *testUserServer) WatchUsers(stream pb.WatchUsersServer) error {
 	for {
 		req, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

@@ -331,7 +331,7 @@ type ListUsersRequest struct {
 	Limit      int32
 }
 
-// BatchCreateUsersResponse summarises a client-streaming batch create.
+// BatchCreateUsersResponse summarizes a client-streaming batch create.
 type BatchCreateUsersResponse struct {
 	Created int32
 	Users   []*User

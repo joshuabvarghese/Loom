@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── Lint & format ────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: go.sum
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet -mod=vendor ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m --mod=vendor
+
+  # ── Test ─────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.21", "1.22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: go.sum
+
+      - name: Test with race detector
+        run: go test -mod=vendor -race -count=1 -timeout=120s ./...
+
+      - name: Upload coverage
+        if: matrix.go == '1.22'
+        run: |
+          go test -mod=vendor -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out | tail -1
+
+  # ── Build (primary) ──────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: go.sum
+
+      - name: Build
+        run: go build -mod=vendor -trimpath -ldflags="-s -w" -o bin/loom .
+
+      - name: Build testserver
+        run: go build -mod=vendor -trimpath -o bin/testserver ./testserver
+
+      - name: Smoke test (demo mode)
+        run: |
+          ./bin/loom -demo -listen :19999 -ui :19998 &
+          PID=$!
+          sleep 2
+          curl -sf http://localhost:19998/live || (kill $PID; exit 1)
+          curl -sf http://localhost:19998/ready || (kill $PID; exit 1)
+          kill $PID
+
+  # ── Cross-compile ─────────────────────────────────────────────────────────────
+  cross:
+    name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64  }
+          - { goos: linux,   goarch: arm64  }
+          - { goos: darwin,  goarch: amd64  }
+          - { goos: darwin,  goarch: arm64  }
+          - { goos: windows, goarch: amd64  }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: go.sum
+
+      - name: Build
+        env:
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          go build -mod=vendor -trimpath \
+            -ldflags="-s -w" \
+            -o "bin/loom-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" .

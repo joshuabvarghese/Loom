@@ -22,8 +22,10 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: go.sum
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Tidy & download dependencies
+        run: |
+          go mod tidy
+          go mod download
 
       - name: Run tests
         run: go test -race -count=1 -timeout=120s ./...

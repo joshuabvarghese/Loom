@@ -37,16 +37,16 @@ var (
 
 	FileDesc protoreflect.FileDescriptor
 
-	UserDesc               protoreflect.MessageDescriptor
-	GetUserReqDesc         protoreflect.MessageDescriptor
-	GetUserRespDesc        protoreflect.MessageDescriptor
-	CreateUserReqDesc      protoreflect.MessageDescriptor
-	CreateUserRespDesc     protoreflect.MessageDescriptor
-	ListUsersReqDesc       protoreflect.MessageDescriptor
-	BatchCreateRespDesc    protoreflect.MessageDescriptor
-	WatchUsersReqDesc      protoreflect.MessageDescriptor
-	WatchUsersRespDesc     protoreflect.MessageDescriptor
-	WatchUsersEventDesc    protoreflect.EnumDescriptor
+	UserDesc            protoreflect.MessageDescriptor
+	GetUserReqDesc      protoreflect.MessageDescriptor
+	GetUserRespDesc     protoreflect.MessageDescriptor
+	CreateUserReqDesc   protoreflect.MessageDescriptor
+	CreateUserRespDesc  protoreflect.MessageDescriptor
+	ListUsersReqDesc    protoreflect.MessageDescriptor
+	BatchCreateRespDesc protoreflect.MessageDescriptor
+	WatchUsersReqDesc   protoreflect.MessageDescriptor
+	WatchUsersRespDesc  protoreflect.MessageDescriptor
+	WatchUsersEventDesc protoreflect.EnumDescriptor
 
 	UserRoleDesc protoreflect.EnumDescriptor
 )

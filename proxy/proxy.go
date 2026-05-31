@@ -691,7 +691,6 @@ func ms(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000.0
 }
 
-
 func printCall(call *recpkg.CallRecord, color bool) {
 	green := "\033[32m"
 	red := "\033[31m"
@@ -717,5 +716,3 @@ func printCall(call *recpkg.CallRecord, color bool) {
 		len(call.Response),
 	)
 }
-
-

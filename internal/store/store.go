@@ -28,9 +28,9 @@ type SessionInfo struct {
 // Store combines persistent NDJSON storage with a live Recorder.
 type Store struct {
 	sessionName string
-	Recorder  *recorder.Recorder
-	file      *os.File
-	enc       *json.Encoder
+	Recorder    *recorder.Recorder
+	file        *os.File
+	enc         *json.Encoder
 }
 
 // New opens (or creates) the session file for sessionName and returns a Store.

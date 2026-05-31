@@ -53,7 +53,7 @@ type CallRecord struct {
 	Mutated     bool          `json:"mutated,omitempty"`
 	// GrpcurlCmd is a ready-to-paste grpcurl command reproducing this call.
 	// Populated at record time; omitted if request body can't be decoded.
-	GrpcurlCmd  string        `json:"grpcurlCmd,omitempty"`
+	GrpcurlCmd string `json:"grpcurlCmd,omitempty"`
 }
 
 // BuildGrpcurlCommand constructs a grpcurl CLI command that reproduces the

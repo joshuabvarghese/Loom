@@ -139,8 +139,8 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 
 	if err := proto.Unmarshal(body, dynMsg); err != nil {
 		return &Frame{
-			Raw: raw,
-			Err: fmt.Errorf("protobuf unmarshal: %w", err),
+			Raw:  raw,
+			Err:  fmt.Errorf("protobuf unmarshal: %w", err),
 			JSON: fmt.Sprintf("(unmarshal error — raw %d bytes)", msgLen),
 		}, nil
 	}
@@ -153,8 +153,8 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 	}.Marshal(dynMsg)
 	if err != nil {
 		return &Frame{
-			Raw: raw,
-			Err: fmt.Errorf("json marshal: %w", err),
+			Raw:  raw,
+			Err:  fmt.Errorf("json marshal: %w", err),
 			JSON: fmt.Sprintf("(json error — raw %d bytes)", msgLen),
 		}, nil
 	}

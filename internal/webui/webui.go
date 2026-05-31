@@ -24,10 +24,10 @@ type ReplayFunc func(call *recpkg.CallRecord) (string, error)
 
 // Server is the Web Inspector HTTP server.
 type Server struct {
-	rec          *recpkg.Recorder
-	replay       ReplayFunc
-	proxyAddr    string
-	backendTLS   bool
+	rec        *recpkg.Recorder
+	replay     ReplayFunc
+	proxyAddr  string
+	backendTLS bool
 }
 
 // NewWithOptions creates a Server.

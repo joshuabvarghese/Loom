@@ -12,6 +12,7 @@ package gen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -720,7 +721,7 @@ func (c *DemoClient) ListUsers(ctx context.Context, req *ListUsersRequest, opts 
 	for {
 		dynResp := dynamicpb.NewMessage(GetUserRespDesc)
 		if err := stream.RecvMsg(dynResp); err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err

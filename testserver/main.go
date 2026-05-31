@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -104,7 +105,7 @@ func (s *userServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.Bat
 	var created []*pb.User
 	for {
 		req, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -135,7 +136,7 @@ func (s *userServer) WatchUsers(stream pb.WatchUsersServer) error {
 	fmt.Printf("[backend] WatchUsers  connected\n")
 	for {
 		req, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

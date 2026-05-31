@@ -226,8 +226,8 @@ func (r *Reflector) resolveFromSources(
 	info, protoErr := r.fetchFromProtoDir(ctx, dir, svc, method, full)
 	if protoErr != nil {
 		return nil, fmt.Errorf(
-			"reflection failed (%v); proto-dir fallback also failed: %w",
-			reflectErr, protoErr,
+			"proto-dir fallback failed: %w (reflection error was: %s)",
+			protoErr, reflectErr.Error(),
 		)
 	}
 	return info, nil

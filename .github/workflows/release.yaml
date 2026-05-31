@@ -22,8 +22,11 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: go.sum
 
+      - name: Download dependencies
+        run: go mod download
+
       - name: Run tests
-        run: go test -mod=vendor -race -count=1 -timeout=120s ./...
+        run: go test -race -count=1 -timeout=120s ./...
 
       - name: Build release binaries
         run: |
@@ -38,7 +41,7 @@ jobs:
 
             OUTPUT="dist/loom-${GOOS}-${GOARCH}${EXT}"
             CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
-              go build -mod=vendor -trimpath \
+              go build -trimpath \
                 -ldflags="-s -w -X main.Version=${VERSION}" \
                 -o "$OUTPUT" .
 

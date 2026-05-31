@@ -33,14 +33,17 @@ jobs:
             exit 1
           fi
 
+      - name: Download dependencies
+        run: go mod download
+
       - name: Vet
-        run: go vet -mod=vendor ./...
+        run: go vet ./...
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout=5m --mod=vendor
+          args: --timeout=5m
 
   # ── Test ─────────────────────────────────────────────────────────────────────
   test:
@@ -58,16 +61,19 @@ jobs:
           go-version: ${{ matrix.go }}
           cache-dependency-path: go.sum
 
+      - name: Download dependencies
+        run: go mod download
+
       - name: Test with race detector
-        run: go test -mod=vendor -race -count=1 -timeout=120s ./...
+        run: go test -race -count=1 -timeout=120s ./...
 
       - name: Upload coverage
         if: matrix.go == '1.22'
         run: |
-          go test -mod=vendor -coverprofile=coverage.out -covermode=atomic ./...
+          go test -coverprofile=coverage.out -covermode=atomic ./...
           go tool cover -func=coverage.out | tail -1
 
-  # ── Build (primary) ──────────────────────────────────────────────────────────
+  # ── Build ────────────────────────────────────────────────────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -80,18 +86,21 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: go.sum
 
-      - name: Build
-        run: go build -mod=vendor -trimpath -ldflags="-s -w" -o bin/loom .
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build loom
+        run: go build -trimpath -ldflags="-s -w" -o bin/loom .
 
       - name: Build testserver
-        run: go build -mod=vendor -trimpath -o bin/testserver ./testserver
+        run: go build -trimpath -o bin/testserver ./testserver
 
-      - name: Smoke test (demo mode)
+      - name: Smoke test
         run: |
           ./bin/loom -demo -listen :19999 -ui :19998 &
           PID=$!
           sleep 2
-          curl -sf http://localhost:19998/live || (kill $PID; exit 1)
+          curl -sf http://localhost:19998/live  || (kill $PID; exit 1)
           curl -sf http://localhost:19998/ready || (kill $PID; exit 1)
           kill $PID
 
@@ -104,11 +113,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64  }
-          - { goos: linux,   goarch: arm64  }
-          - { goos: darwin,  goarch: amd64  }
-          - { goos: darwin,  goarch: arm64  }
-          - { goos: windows, goarch: amd64  }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
 
@@ -117,14 +126,17 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: go.sum
 
+      - name: Download dependencies
+        run: go mod download
+
       - name: Build
         env:
-          GOOS:   ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS:        ${{ matrix.goos }}
+          GOARCH:      ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
-          go build -mod=vendor -trimpath \
+          go build -trimpath \
             -ldflags="-s -w" \
             -o "bin/loom-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" .

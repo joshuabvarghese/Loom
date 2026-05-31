@@ -482,7 +482,7 @@ func replaySingleCall(call *recorder.CallRecord, proxyAddr string, useTLS bool) 
 
 func grpcCodeName(code string) string {
 	names := map[string]string{
-		"0": "OK", "1": "CANCELLED", "2": "UNKNOWN",
+		"0": "OK", "1": "CANCELED", "2": "UNKNOWN",
 		"5": "NOT_FOUND", "13": "INTERNAL", "14": "UNAVAILABLE",
 	}
 	if n, ok := names[code]; ok {

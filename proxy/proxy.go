@@ -409,7 +409,7 @@ func (h *Handler) serveStreaming(
 						JSON:  f.JSON,
 					})
 				case <-reqCtx.Done():
-					// Backend failed or context cancelled; stop consuming.
+					// Backend failed or context canceled; stop consuming.
 					pw.CloseWithError(reqCtx.Err())
 					wg.Wait()
 					return
@@ -672,7 +672,7 @@ func writeGRPCError(w http.ResponseWriter, code codes.Code, msg string) {
 
 func grpcCodeName(code string) string {
 	names := map[string]string{
-		"0": "OK", "1": "CANCELLED", "2": "UNKNOWN",
+		"0": "OK", "1": "canceled", "2": "UNKNOWN",
 		"3": "INVALID_ARGUMENT", "4": "DEADLINE_EXCEEDED",
 		"5": "NOT_FOUND", "6": "ALREADY_EXISTS",
 		"7": "PERMISSION_DENIED", "8": "RESOURCE_EXHAUSTED",

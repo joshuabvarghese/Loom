@@ -1,0 +1,52 @@
+run:
+  timeout: 5m
+  modules-download-mode: vendor
+
+linters:
+  enable:
+    - errcheck       # unchecked errors
+    - gosimple       # simplification suggestions
+    - govet          # go vet checks
+    - ineffassign    # useless assignments
+    - staticcheck    # static analysis
+    - unused         # unused code
+    - gofmt          # formatting
+    - goimports      # import ordering
+    - misspell       # typos in comments/strings
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+    - noctx          # http calls without context
+    - bodyclose      # unclosed http response bodies
+    - errorlint      # error wrapping issues (catches == io.EOF style)
+    - exhaustive     # switch exhaustiveness on enums
+
+linters-settings:
+  gofmt:
+    simplify: true
+
+  misspell:
+    locale: UK
+
+  errcheck:
+    # These are intentional — we don't care about write errors to ResponseWriter
+    exclude-functions:
+      - (net/http.ResponseWriter).Write
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+
+  exhaustive:
+    default-signifies-exhaustive: true
+
+issues:
+  exclude-rules:
+    # Test files get more relaxed rules
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unparam
+
+    # Vendor is not our code
+    - path: vendor/
+      linters:
+        - all

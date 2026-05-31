@@ -74,9 +74,8 @@ func SendSampleCalls(ctx context.Context, proxyAddr string) {
 	// Brief pause so the proxy is fully ready
 	time.Sleep(300 * time.Millisecond)
 
-	conn, err := grpc.DialContext(ctx, proxyAddr,
+	conn, err := grpc.NewClient(proxyAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(), // optional, waits for connection
 	)
 	if err != nil {
 		log.Printf("demo: connecting to proxy %s: %v", proxyAddr, err)

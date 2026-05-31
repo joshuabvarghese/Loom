@@ -1,9 +1,8 @@
 // Package health provides HTTP health-check handlers for Loom.
 //
-// Three endpoints are exposed:
-//
-//   - /live  — liveness: always 200 while the process is running.
-//     Kubernetes uses this to decide whether to restart the container.
+// /live is always 200 while the process is running (k8s liveness).
+// /ready returns 503 if the circuit breaker is open (k8s readiness).
+// /health gives a combined JSON summary for dashboards.
 //
 //   - /ready — readiness: 200 only when the backend is connected.
 //     Kubernetes uses this to decide whether to route traffic.

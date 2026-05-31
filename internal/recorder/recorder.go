@@ -1,8 +1,6 @@
-// Package recorder captures gRPC calls for logging, replay, and real-time
-// streaming to the Web UI. Every completed call produces a CallRecord which is:
-//   - Written to an NDJSON log file (if -log is set)
-//   - Pushed to all active SSE subscribers (for the Web UI)
-//   - Kept in a bounded in-memory ring buffer (for /api/calls)
+// Package recorder captures gRPC calls and fans them out to the
+// NDJSON log, the SSE stream for the Web UI, and the in-memory ring buffer
+// that backs /api/calls.
 package recorder
 
 import (

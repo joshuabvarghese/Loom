@@ -27,19 +27,14 @@ if [ "$GO_MAJOR" -lt 1 ] || { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]; }
   exit 1
 fi
 
-# Download dependencies
-echo "  Downloading dependencies..."
-go mod tidy
-echo "  ✓ Dependencies ready"
-
 mkdir -p bin
 
 echo "  Building loom..."
-go build -ldflags="-s -w" -o bin/loom .
+go build -mod=vendor -ldflags="-s -w" -o bin/loom .
 echo "  ✓ bin/loom"
 
 echo "  Building testserver..."
-go build -ldflags="-s -w" -o bin/testserver ./testserver
+go build -mod=vendor -ldflags="-s -w" -o bin/testserver ./testserver
 echo "  ✓ bin/testserver"
 
 echo ""
@@ -51,7 +46,7 @@ echo "  ./bin/loom -demo"
 echo "  # then open http://localhost:9998"
 echo ""
 echo "  # Option B — proxy your own service"
-echo "  ./bin/testserver                          # Terminal 1"
+echo "  ./bin/testserver                               # Terminal 1"
 echo "  ./bin/loom -backend localhost:50051 -ui :9998  # Terminal 2"
 echo "  open http://localhost:9998"
 echo "  ─────────────────────────────────────────"

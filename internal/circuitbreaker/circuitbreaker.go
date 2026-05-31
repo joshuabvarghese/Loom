@@ -28,7 +28,7 @@ var ErrCircuitOpen = errors.New("circuit breaker open: backend unavailable")
 type state int
 
 const (
-	stateClosed   state = iota
+	stateClosed state = iota
 	stateOpen
 	stateHalfOpen
 )

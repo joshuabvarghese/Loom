@@ -10,6 +10,7 @@ Your gRPC Client  →  Loom (:9999)  →  Your Backend (:50051)
 ```
 
 [![CI](https://github.com/joshuabvarghese/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/joshuabvarghese/loom/actions/workflows/ci.yml)
+[![Release](https://github.com/joshuabvarghese/loom/actions/workflows/release.yml/badge.svg)](https://github.com/joshuabvarghese/loom/actions/workflows/release.yml)
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue)](https://golang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENCE)
 

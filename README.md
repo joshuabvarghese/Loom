@@ -1,9 +1,6 @@
-# Loom — gRPC Debugging Proxy
+# Loom
 
-[![Go Version](https://img.shields.io/badge/go-1.21+-blue)](https://golang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENCE)
-
-Loom sits between your gRPC client and server, decodes every message in real-time, and shows it in a web UI — so you can see exactly what's happening without changing a line of application code.
+A gRPC debugging proxy. Point it at your backend, point your client at Loom, and watch every call decoded in a browser tab.
 
 ```
 Your gRPC Client  →  Loom (:9999)  →  Your Backend (:50051)
@@ -12,65 +9,62 @@ Your gRPC Client  →  Loom (:9999)  →  Your Backend (:50051)
                   http://localhost:9998
 ```
 
-> **Status: production-ready.** Core proxy, Web Inspector, session persistence, mutation rules, streaming RPCs (server, client, bidi), admin/health/metrics endpoints, and structured JSON logging are all implemented.
-
----
-![Loom demo](demo.png)
-## What works right now
-
-- **Intercept & decode** — proxies any gRPC call (unary, server-streaming, client-streaming, bidi) and decodes every frame using Server Reflection (no proto files needed)
-- **Web Inspector** — live call stream in the browser with request/response JSON viewer and one-click `grpcurl` copy
-- **Session persistence** — call history saved to `~/.loom/sessions/` and restored on restart
-- **Body mutation** — inject, override, or strip JSON fields on any request or response via a rules file
-- **Header mutation** — set, add, or delete gRPC metadata per rule
-- **Replay** — re-send any recorded call from the UI or with `-replay`
-- **Streaming RPCs** — server-streaming, client-streaming, and bidi all work; every frame is decoded and shown in the Web Inspector
-- **TLS** — proxy to TLS-enabled backends with `-backend-tls`
-- **Demo mode** — `loom -demo` spins up an embedded backend with sample traffic, no setup needed
-- **Single binary** — no runtime, no dependencies
-
-## What's not done yet
-
-- Pre-built releases (Homebrew, `go install`, Docker image)
+[![CI](https://github.com/joshuabvarghese/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/joshuabvarghese/loom/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/go-1.21+-blue)](https://golang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENCE)
 
 ---
 
-## Getting started
+## Why
 
-**Requirements:** Go 1.21+
+gRPC traffic is binary. Wireshark can't read it. `grpcurl` is great for one-off calls but you can't watch a flow. I kept running it over and over trying to understand what was happening between services.
+
+Loom sits transparently between your client and backend. It uses [Server Reflection](https://github.com/grpc/grpc/blob/master/doc/server-reflection.md) to decode every frame on the fly — no `.proto` files required — and streams the results into a browser UI. You see the JSON payloads, the status codes, how long each call took, and a ready-to-copy `grpcurl` command to replay any of them.
+
+## What it does
+
+- Intercepts **all four gRPC stream types** — unary, server-streaming, client-streaming, bidi
+- **Auto-decodes** using Server Reflection (no proto files, no codegen step)
+- **Web Inspector** with a live call feed, JSON pretty-printing, and one-click grpcurl replay
+- **Session history** — calls saved to `~/.loom/sessions/` and reloaded on next start
+- **Mutation rules** — JSON file to inject/override/delete fields in requests or responses on the fly
+- **Circuit breaker** — surfaces backend failures cleanly instead of hanging
+- **Prometheus metrics** at `/metrics`, health probes at `/live` and `/ready`
+- **Single binary** — no config needed to get started
+
+---
+
+## Quick start
+
+You need **Go 1.21+**. That's it.
 
 ```bash
 git clone https://github.com/joshuabvarghese/loom
 cd loom
-go mod tidy
 ./scripts/setup.sh
 ```
 
-That builds `bin/loom` and `bin/testserver`.
-
-### Try demo mode (no backend needed)
+Or skip setup and run directly:
 
 ```bash
-./bin/loom -demo
-# Open http://localhost:9998
+go run -mod=vendor . -demo
+# open http://localhost:9998
 ```
 
-Loom starts an embedded gRPC server, sends some sample calls through itself, and you can explore the Web Inspector immediately.
-
-### Proxy your own service
+### Proxying your own service
 
 ```bash
-# Terminal 1 — your backend (or use the included testserver)
+# Terminal 1 — your backend (or the included test server)
 ./bin/testserver
 
-# Terminal 2 — start Loom
+# Terminal 2 — Loom
 ./bin/loom -backend localhost:50051
 
 # Terminal 3 — make a call through Loom
 grpcurl -plaintext -d '{"userId":"abc123"}' localhost:9999 user.UserService/GetUser
 ```
 
-Open **http://localhost:9998** to see the decoded call.
+Then open **http://localhost:9998**. You'll see the call decoded, the request and response as JSON, latency, and a grpcurl command to replay it.
 
 ---
 
@@ -78,37 +72,37 @@ Open **http://localhost:9998** to see the decoded call.
 
 ```
 Connection:
-  -backend        localhost:50051   Backend gRPC server address
-  -listen         :9999            Proxy listen address (point your client here)
-  -backend-tls                     Connect to backend with TLS
-  -backend-tls-skip-verify         Skip TLS certificate verification (insecure)
+  -backend                  localhost:50051   gRPC backend address
+  -listen                   :9999             Proxy listen address
+  -backend-tls                                Connect to backend with TLS
+  -backend-tls-skip-verify                    Skip TLS cert verification
 
 Output:
-  -ui             :9998            Web Inspector address (empty = disabled)
-  -session        default          Session name — history saved to ~/.loom/sessions/<name>.jsonl
-  -log            ""               Also write calls to an NDJSON file
-  -verbose                         Print extra debug info
-  -no-color                        Disable ANSI colour output
+  -ui                       :9998             Web Inspector address (empty to disable)
+  -session                  default           Session name (affects history file)
+  -log                      ""                Write calls to an NDJSON file too
+  -verbose                                    Debug logging
+  -no-color                                   Disable colour output
 
 Mutation:
-  -mutate         ""               Path to a JSON mutation rules file
+  -mutate                   ""                Path to a JSON mutation rules file
 
 Protocol:
-  -proto-dir      ""               Directory of .proto files (fallback if reflection is disabled)
+  -proto-dir                ""                .proto directory (fallback when reflection is off)
 
 Modes:
-  -demo                            Start with embedded backend + sample traffic
-  -replay         ""               Replay an NDJSON log file then exit
-
-Info:
-  -version                         Print version and exit
+  -demo                                       Embedded backend + sample traffic (no setup needed)
+  -replay                   ""                Replay an NDJSON log file then exit
+  -version                                    Print version and exit
 ```
+
+Config file works too — see [`loom.toml`](loom.toml) for the full list.
 
 ---
 
 ## Mutation rules
 
-Create a `rules.json` to modify traffic on the fly:
+Create a `rules.json` to modify traffic on the fly without touching your code:
 
 ```json
 [
@@ -116,7 +110,7 @@ Create a `rules.json` to modify traffic on the fly:
     "method": "/user.UserService/*",
     "direction": "request",
     "headers": {
-      "set": { "authorization": "Bearer expired-token-for-testing" }
+      "set": { "authorization": "Bearer test-token" }
     }
   },
   {
@@ -132,30 +126,23 @@ Create a `rules.json` to modify traffic on the fly:
 ./bin/loom -backend localhost:50051 -mutate rules.json
 ```
 
-Rules support exact method paths and globs (`/pkg.Service/*`). Body and header rules can live in the same file.
+Rules match on exact method paths or globs (`/pkg.Service/*`). Body and header rules can be mixed freely.
 
 ---
 
-## Session persistence
+## Session replay
 
-Calls are saved to `~/.loom/sessions/<name>.jsonl` and reloaded on next start:
+Every call is appended to `~/.loom/sessions/<name>.jsonl`. On restart, Loom reads it back and populates the history.
 
 ```bash
+# Save calls under a named session
 ./bin/loom -backend localhost:50051 -session staging
+
+# Replay against a different backend later
+./bin/loom -replay ~/.loom/sessions/staging.jsonl -backend localhost:50052
 ```
 
-Override the directory: `LOOM_DATA_DIR=/tmp/loom ./bin/loom -demo`
-
----
-
-## Replay
-
-```bash
-# Replay a whole session file against a backend
-./bin/loom -replay ~/.loom/sessions/staging.jsonl -backend localhost:50051
-
-# Or click Replay in the Web Inspector to replay individual calls
-```
+You can also hit **Replay** in the Web Inspector to resend any individual call.
 
 ---
 
@@ -168,19 +155,58 @@ make run-demo         build + start in demo mode
 make run              build + start testserver and loom together
 make test             run unit tests
 make test-race        run with race detector
+make smoke            end-to-end grpcurl test (requires grpcurl)
+make fmt              gofmt
+make vet              go vet
+make vendor           regenerate vendor/
 make clean            remove bin/
-make help             list all targets
+```
+
+---
+
+## Project layout
+
+```
+loom/
+├── main.go                    Entry point — flags, config loading, startup sequence
+├── proxy/
+│   ├── proxy.go               HTTP/2 reverse proxy (unary + all streaming modes)
+│   └── proxy_integration_test.go
+├── internal/
+│   ├── circuitbreaker/        Open/half-open/closed state machine
+│   ├── config/                TOML + flag config merging
+│   ├── health/                /live and /ready handlers
+│   ├── metadata/              Header mutation (add/set/delete)
+│   ├── metrics/               Prometheus counters and histograms
+│   ├── mutator/               JSON body mutation engine
+│   ├── recorder/              Ring buffer + SSE hub + NDJSON writer
+│   ├── reflector/             Server Reflection client with method caching
+│   ├── slog/                  Structured JSON logging helpers
+│   ├── store/                 Session file persistence
+│   ├── transcoder/            gRPC wire format ↔ JSON
+│   └── webui/                 Embedded HTTP server + single-page inspector
+├── demo/                      Embedded demo backend (-demo flag)
+├── testserver/                Standalone test gRPC server + generated protos
+├── scripts/
+│   ├── setup.sh               Build from source
+│   └── smoke_test.sh          End-to-end grpcurl smoke test
+├── loom.toml                  Example config file
+└── Dockerfile
 ```
 
 ---
 
 ## Security
 
-Loom is for **local development and trusted networks only**.
+This is a **dev/debugging tool**. Don't expose it on a public network.
 
-- The Web Inspector has no authentication — keep `-ui` bound to localhost
-- Don't expose Loom's ports to the public internet
-- See [SECURITY.md](SECURITY.md) for the full policy
+The Web Inspector has no auth — keep the `-ui` port bound to localhost. See [SECURITY.md](SECURITY.md).
+
+---
+
+## Contributing
+
+PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

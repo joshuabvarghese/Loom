@@ -1,50 +1,48 @@
-# loom.toml — Loom configuration file
+# loom.toml — config file for Loom
 #
-# Place this file in the directory where you run loom, or at:
+# Drop this file in the directory where you run loom, or at:
 #   ~/.config/loom/config.toml
 #
-# CLI flags always take precedence over values set here.
-# All fields are optional — Loom operates perfectly from flags alone.
+# CLI flags always win over values here.
+# Everything is optional — Loom works fine from flags alone.
 
-# gRPC proxy listen address. Point your client here.
+# Where Loom listens for gRPC traffic from your client.
 listen = ":9999"
 
-# Backend gRPC server address.
+# Your gRPC backend.
 backend = "localhost:50051"
 
-# Session name. Call history is saved to ~/.loom/sessions/<session>.jsonl
+# Session name — call history goes to ~/.loom/sessions/<session>.jsonl
 session = "default"
 
-# Web Inspector / health / metrics listen address.
+# Web Inspector, health probes, and metrics all share this address:
 #
 #   Web Inspector : http://localhost:9998/
-#   Health        : http://localhost:9998/health   (combined)
-#   Liveness      : http://localhost:9998/live     (k8s liveness probe)
-#   Readiness     : http://localhost:9998/ready    (k8s readiness probe)
-#   Metrics       : http://localhost:9998/metrics  (Prometheus scrape target)
+#   Health        : http://localhost:9998/health
+#   Liveness      : http://localhost:9998/live    (k8s)
+#   Readiness     : http://localhost:9998/ready   (k8s)
+#   Metrics       : http://localhost:9998/metrics (Prometheus)
 ui = ":9998"
 
-# Enable TLS for the backend connection.
+# Connect to the backend over TLS.
 backend_tls = false
 
-# Skip TLS certificate verification. Use only in development environments.
+# Skip TLS cert verification. Dev environments only.
 backend_tls_skip_verify = false
 
-# Print extra debug information to stdout.
+# Extra debug output.
 verbose = false
 
-# Disable ANSI colour in terminal output.
+# Turn off ANSI colour.
 no_color = false
 
 [mutate]
-  # Path to a JSON file containing request/response mutation rules.
-  # Example: https://github.com/joshuabvarghese/loom#mutation-rules
+  # Path to a JSON file with request/response mutation rules.
   # file = "/etc/loom/rules.json"
 
 [log]
-  # Write an NDJSON call log to this file in addition to the session store.
+  # Write an NDJSON call log here in addition to the session store.
   # file = "/var/log/loom/calls.jsonl"
 
-  # Minimum log level for structured JSON logs written to stderr.
-  # Options: debug | info | warn | error
+  # Minimum log level: debug | info | warn | error
   level = "info"

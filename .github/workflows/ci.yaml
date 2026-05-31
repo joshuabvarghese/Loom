@@ -41,11 +41,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Remove vendor directory
+        run: rm -rf vendor
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --timeout=5m --go=1.22 --skip-dirs=vendor
+          args: --timeout=5m
 
   # ── Test ─────────────────────────────────────────────────────────────────────
   test:

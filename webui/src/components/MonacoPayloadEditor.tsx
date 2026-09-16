@@ -14,17 +14,9 @@ interface Props {
   readOnly?: boolean
 }
 
-/**
- * A JSON editor for one gRPC method's request/response payload, wired up to
- * Monaco's JSON language service so the schema derived from the backend's
- * live proto descriptors (GET /api/v1/schema) drives real-time validation
- * and autocomplete — undefined fields, wrong types, and missing required
- * fields are flagged before the call ever reaches `replay`.
- *
- * Each instance gets its own synthetic model path so multiple editors (e.g.
- * one per open Replay modal) don't stomp on each other's schemas — see
- * lib/monacoSchemaRegistry.
- */
+// Each instance gets its own synthetic model path so multiple open editors
+// (e.g. two Replay modals) don't stomp on each other's schemas in Monaco's
+// global registry — see lib/monacoSchemaRegistry.
 export default function MonacoPayloadEditor({
   methodName,
   schemaType = 'request',

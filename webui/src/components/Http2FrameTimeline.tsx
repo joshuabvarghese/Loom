@@ -15,14 +15,14 @@ const MIN_TIMELINE_WIDTH = 600
 const MARKER_RADIUS = 4
 
 const TYPE_COLORS: Record<string, string> = {
-  HEADERS: '#3b7eff', // accent
-  DATA: '#22c55e', // green
-  RST_STREAM: '#f43f5e', // red
-  WINDOW_UPDATE: '#f59e0b', // amber
-  SETTINGS: '#a855f7', // purple
+  HEADERS: '#3b7eff',
+  DATA: '#22c55e',
+  RST_STREAM: '#f43f5e',
+  WINDOW_UPDATE: '#f59e0b',
+  SETTINGS: '#a855f7',
   GOAWAY: '#f43f5e',
-  PING: '#22d3ee', // cyan
-  PRIORITY: '#8892a4', // text2
+  PING: '#22d3ee',
+  PRIORITY: '#8892a4',
   PUSH_PROMISE: '#8892a4',
 }
 
@@ -34,13 +34,20 @@ interface Row {
   key: string
   connId: string
   streamId: number
-  isConnRow: boolean // streamId 0 (SETTINGS/PING/GOAWAY/connection-level WINDOW_UPDATE)
+  isConnRow: boolean // streamId 0: SETTINGS/PING/GOAWAY/connection-level WINDOW_UPDATE
   firstMs: number
   lastMs: number
   frames: FrameEvent[]
 }
 
-/** Groups frames into rows: one connection-level row (stream 0) plus one row per real stream, per connection. */
+interface Marker {
+  frame: FrameEvent
+  x: number
+  y: number
+  rowKey: string
+}
+
+// One connection-level row (stream 0) plus one row per real stream, per connection.
 function buildRows(frames: FrameEvent[], t0: number): Row[] {
   const rows = new Map<string, Row>()
   for (const f of frames) {
@@ -70,6 +77,66 @@ function buildRows(frames: FrameEvent[], t0: number): Row[] {
   })
 }
 
+function drawRows(ctx: CanvasRenderingContext2D, rows: Row[], canvasWidth: number) {
+  rows.forEach((row, i) => {
+    const y = HEADER_HEIGHT + i * ROW_HEIGHT
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'transparent'
+    ctx.fillRect(0, y, canvasWidth, ROW_HEIGHT)
+
+    ctx.fillStyle = row.isConnRow ? '#8892a4' : '#e4e8f0'
+    ctx.font = row.isConnRow ? '10px "GeistMono", monospace' : '11px "GeistMono", monospace'
+    ctx.textBaseline = 'middle'
+    const label = row.isConnRow ? `${row.connId} · conn` : `${row.connId} · stream ${row.streamId}`
+    ctx.fillText(truncateLabel(ctx, label, LABEL_WIDTH - 16), 8, y + ROW_HEIGHT / 2)
+
+    const barY = y + ROW_HEIGHT / 2
+    const x1 = LABEL_WIDTH + 8 + row.firstMs * PX_PER_MS
+    const x2 = LABEL_WIDTH + 8 + row.lastMs * PX_PER_MS
+    ctx.strokeStyle = 'rgba(136,146,164,0.35)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.moveTo(x1, barY)
+    ctx.lineTo(Math.max(x2, x1 + 1), barY)
+    ctx.stroke()
+  })
+}
+
+function drawLabelSeparator(ctx: CanvasRenderingContext2D, canvasHeight: number) {
+  ctx.strokeStyle = '#1e2330'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(LABEL_WIDTH, 0)
+  ctx.lineTo(LABEL_WIDTH, canvasHeight)
+  ctx.stroke()
+}
+
+function drawMarkerTriangle(ctx: CanvasRenderingContext2D, m: Marker) {
+  ctx.beginPath()
+  if (m.frame.direction === 'in') {
+    ctx.moveTo(m.x, m.y - MARKER_RADIUS)
+    ctx.lineTo(m.x - MARKER_RADIUS, m.y + MARKER_RADIUS)
+    ctx.lineTo(m.x + MARKER_RADIUS, m.y + MARKER_RADIUS)
+  } else {
+    ctx.moveTo(m.x, m.y + MARKER_RADIUS)
+    ctx.lineTo(m.x - MARKER_RADIUS, m.y - MARKER_RADIUS)
+    ctx.lineTo(m.x + MARKER_RADIUS, m.y - MARKER_RADIUS)
+  }
+  ctx.closePath()
+}
+
+function drawMarkers(ctx: CanvasRenderingContext2D, markers: Marker[], selectedSeq: number | null) {
+  for (const m of markers) {
+    ctx.fillStyle = colorFor(m.frame.type)
+    drawMarkerTriangle(ctx, m)
+    ctx.fill()
+    if (m.frame.seq === selectedSeq) {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+  }
+}
+
 export default function Http2FrameTimeline({ frames, selectedSeq, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -87,7 +154,7 @@ export default function Http2FrameTimeline({ frames, selectedSeq, onSelect }: Pr
 
   // Flat index of every drawn marker, for hit-testing on click/hover.
   const markers = useMemo(() => {
-    const out: { frame: FrameEvent; x: number; y: number; rowKey: string }[] = []
+    const out: Marker[] = []
     rows.forEach((row, i) => {
       const y = HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2
       for (const f of row.frames) {
@@ -112,63 +179,9 @@ export default function Http2FrameTimeline({ frames, selectedSeq, onSelect }: Pr
     ctx.scale(dpr, dpr)
 
     ctx.clearRect(0, 0, canvasWidth, canvasHeight)
-
-    // Row backgrounds + labels
-    rows.forEach((row, i) => {
-      const y = HEADER_HEIGHT + i * ROW_HEIGHT
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'transparent'
-      ctx.fillRect(0, y, canvasWidth, ROW_HEIGHT)
-
-      ctx.fillStyle = row.isConnRow ? '#8892a4' : '#e4e8f0'
-      ctx.font = row.isConnRow ? '10px "GeistMono", monospace' : '11px "GeistMono", monospace'
-      ctx.textBaseline = 'middle'
-      const label = row.isConnRow ? `${row.connId} · conn` : `${row.connId} · stream ${row.streamId}`
-      ctx.fillText(truncateLabel(ctx, label, LABEL_WIDTH - 16), 8, y + ROW_HEIGHT / 2)
-
-      // Stream lifetime bar
-      const barY = y + ROW_HEIGHT / 2
-      const x1 = LABEL_WIDTH + 8 + row.firstMs * PX_PER_MS
-      const x2 = LABEL_WIDTH + 8 + row.lastMs * PX_PER_MS
-      ctx.strokeStyle = 'rgba(136,146,164,0.35)'
-      ctx.lineWidth = 1.5
-      ctx.beginPath()
-      ctx.moveTo(x1, barY)
-      ctx.lineTo(Math.max(x2, x1 + 1), barY)
-      ctx.stroke()
-    })
-
-    // Vertical separator between labels and timeline
-    ctx.strokeStyle = '#1e2330'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(LABEL_WIDTH, 0)
-    ctx.lineTo(LABEL_WIDTH, canvasHeight)
-    ctx.stroke()
-
-    // Frame markers
-    for (const m of markers) {
-      const isSelected = m.frame.seq === selectedSeq
-      ctx.fillStyle = colorFor(m.frame.type)
-      ctx.beginPath()
-      if (m.frame.direction === 'in') {
-        // Upward-pointing triangle: inbound
-        ctx.moveTo(m.x, m.y - MARKER_RADIUS)
-        ctx.lineTo(m.x - MARKER_RADIUS, m.y + MARKER_RADIUS)
-        ctx.lineTo(m.x + MARKER_RADIUS, m.y + MARKER_RADIUS)
-      } else {
-        // Downward-pointing triangle: outbound
-        ctx.moveTo(m.x, m.y + MARKER_RADIUS)
-        ctx.lineTo(m.x - MARKER_RADIUS, m.y - MARKER_RADIUS)
-        ctx.lineTo(m.x + MARKER_RADIUS, m.y - MARKER_RADIUS)
-      }
-      ctx.closePath()
-      ctx.fill()
-      if (isSelected) {
-        ctx.strokeStyle = '#ffffff'
-        ctx.lineWidth = 1.5
-        ctx.stroke()
-      }
-    }
+    drawRows(ctx, rows, canvasWidth)
+    drawLabelSeparator(ctx, canvasHeight)
+    drawMarkers(ctx, markers, selectedSeq)
   }, [rows, markers, canvasWidth, canvasHeight, selectedSeq])
 
   function hitTest(clientX: number, clientY: number) {

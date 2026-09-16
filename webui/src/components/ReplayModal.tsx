@@ -8,7 +8,6 @@ interface Props {
   onClose: () => void
 }
 
-/** Pretty-prints the first request frame's JSON, or a stub object if there isn't one. */
 function initialPayload(call: CallRecord): string {
   const raw = call.request?.[0]?.json
   if (!raw) return '{}'

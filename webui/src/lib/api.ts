@@ -1,11 +1,7 @@
 import type { CallRecord, FrameEvent, ReplayResult } from '../types'
 
-/**
- * Fetches the full call history from the backend.
- * Loom's -ui server historically returns 200 with a JSON array here, so we
- * defend against non-array bodies (e.g. transient proxy errors) rather than
- * letting a bad payload crash the list.
- */
+// Defends against non-array bodies (e.g. a transient proxy error response)
+// rather than letting a bad payload crash the list.
 export async function fetchCallHistory(): Promise<CallRecord[]> {
   const res = await fetch('/api/calls')
   if (!res.ok) throw new Error(`GET /api/calls: ${res.status}`)
@@ -26,11 +22,6 @@ export async function replayCall(id: string, payload?: string): Promise<ReplayRe
   return res.json()
 }
 
-/**
- * Fetches a draft-07 JSON Schema for a method's request or response message,
- * derived from the backend's gRPC server-reflection descriptor. Powers the
- * live validation/autocomplete in <MonacoPayloadEditor/>.
- */
 export async function fetchMethodSchema(
   method: string,
   type: 'request' | 'response' = 'request',
@@ -47,12 +38,9 @@ export async function fetchMethodSchema(
 export type StreamListener = (call: CallRecord) => void
 export type ConnStateListener = (connected: boolean) => void
 
-/**
- * Opens an SSE connection at `path` and auto-reconnects on error (3s
- * backoff, single retry loop — no exponential backoff since dev-time event
- * volume is low). Shared by the call stream (/api/stream) and the HTTP/2
- * frame stream (/api/events); onMessage does the type-specific parsing.
- */
+// Auto-reconnects on error with a flat 3s retry (no exponential backoff —
+// dev-time event volume is low enough that it doesn't matter). Shared by
+// the call stream and the frame stream; onMessage does the type-specific parsing.
 function subscribeToSSE<T>(
   path: string,
   onMessage: (msg: T) => void,
@@ -90,7 +78,6 @@ function subscribeToSSE<T>(
   }
 }
 
-/** Opens the /api/stream SSE connection for completed calls. */
 export function subscribeToCallStream(
   onCall: StreamListener,
   onConnState: ConnStateListener,
@@ -98,12 +85,9 @@ export function subscribeToCallStream(
   return subscribeToSSE('/api/stream', onCall, onConnState)
 }
 
-/**
- * Fetches recently-observed HTTP/2 frame telemetry (newest first). Returns
- * an empty array if the backend wasn't built with frame sniffing enabled
- * (GET /api/frames responds 501) rather than throwing, since the frame
- * timeline is an optional/best-effort view.
- */
+// Returns an empty array (rather than throwing) when the backend wasn't
+// built with frame sniffing enabled and /api/frames responds 501 — the
+// frame timeline is an optional, best-effort view.
 export async function fetchFrameHistory(): Promise<FrameEvent[]> {
   const res = await fetch('/api/frames')
   if (!res.ok) return []
@@ -111,7 +95,6 @@ export async function fetchFrameHistory(): Promise<FrameEvent[]> {
   return Array.isArray(data) ? data : []
 }
 
-/** Opens the /api/events SSE connection for live HTTP/2 frame telemetry. */
 export function subscribeToFrameStream(
   onFrame: (frame: FrameEvent) => void,
   onConnState: ConnStateListener,

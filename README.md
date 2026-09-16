@@ -149,7 +149,8 @@ You can also hit **Replay** in the Web Inspector to resend any individual call.
 ## Make targets
 
 ```
-make build            build bin/loom
+make frontend         build the React SPA into internal/webui/dist
+make build            build the frontend, then bin/loom
 make build-testserver build bin/testserver
 make run-demo         build + start in demo mode
 make run              build + start testserver and loom together
@@ -164,11 +165,47 @@ make clean            remove bin/
 
 ---
 
+## Loom Studio (Web Inspector frontend)
+
+The Web Inspector is a Vite + React 19 + TypeScript SPA that lives in `webui/`
+and is compiled into `internal/webui/dist`, which the Go binary embeds at
+compile time via `go:embed` — the running binary is still a single static
+file, no separate static asset deployment.
+
+```
+cd webui
+npm install
+npm run dev      # hot-reload dev server on :5173, proxies /api/* to a
+                  # `loom -ui :9998` instance you run separately
+npm run build     # compiles into internal/webui/dist (also done by `make build`)
+```
+
+The compiled `internal/webui/dist` is committed so `git clone && go build .`
+works without Node installed; CI rebuilds the frontend on every push and
+fails if the committed output has drifted from `webui/src`.
+
+Backend API surface the frontend talks to (all served from the `-ui` port):
+
+```
+GET  /api/config     — {proxyAddr} shown in the header
+GET  /api/calls      — full call history, newest first
+GET  /api/calls/:id  — a single call record
+GET  /api/stream     — SSE stream of new calls in real time
+POST /api/replay/:id — replay a recorded call through the proxy
+```
+
+---
+
 ## Project layout
 
 ```
 loom/
 ├── main.go                    Entry point — flags, config loading, startup sequence
+├── webui/                     Loom Studio frontend — Vite + React 19 + TypeScript
+│   └── src/
+│       ├── components/        TopBar, Sidebar, DetailPane, JsonView, GrpcurlView, ...
+│       ├── hooks/useCalls.ts  Call list state, SSE subscription, filtering, selection
+│       └── lib/                fetch/SSE client, formatting helpers
 ├── proxy/
 │   ├── proxy.go               HTTP/2 reverse proxy (unary + all streaming modes)
 │   └── proxy_integration_test.go
@@ -177,14 +214,14 @@ loom/
 │   ├── config/                TOML + flag config merging
 │   ├── health/                /live and /ready handlers
 │   ├── metadata/              Header mutation (add/set/delete)
-│   ├── metrics/               Prometheus counters and histograms
-│   ├── mutator/               JSON body mutation engine
-│   ├── recorder/              Ring buffer + SSE hub + NDJSON writer
-│   ├── reflector/             Server Reflection client with method caching
-│   ├── slog/                  Structured JSON logging helpers
-│   ├── store/                 Session file persistence
-│   ├── transcoder/            gRPC wire format ↔ JSON
-│   └── webui/                 Embedded HTTP server + single-page inspector
+│   ├── metrics/                Prometheus counters and histograms
+│   ├── mutator/                JSON body mutation engine
+│   ├── recorder/               Ring buffer + SSE hub + NDJSON writer
+│   ├── reflector/              Server Reflection client with method caching
+│   ├── slog/                   Structured JSON logging helpers
+│   ├── store/                  Session file persistence
+│   ├── transcoder/             gRPC wire format ↔ JSON
+│   └── webui/                  API handlers + go:embed of webui/dist
 ├── demo/                      Embedded demo backend (-demo flag)
 ├── testserver/                Standalone test gRPC server + generated protos
 ├── scripts/
@@ -195,6 +232,7 @@ loom/
 ```
 
 ---
+
 
 ## Security
 

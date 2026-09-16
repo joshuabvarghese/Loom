@@ -16,11 +16,6 @@ import (
 	"time"
 )
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Data model
-// ─────────────────────────────────────────────────────────────────────────────
-
-// StreamKind describes the RPC streaming type.
 type StreamKind string
 
 const (
@@ -30,14 +25,12 @@ const (
 	StreamBidi   StreamKind = "bidi_streaming"
 )
 
-// FrameRecord is one decoded message frame (request or response).
 type FrameRecord struct {
 	Index int    `json:"index"`
 	JSON  string `json:"json"`
 	Raw   []byte `json:"raw,omitempty"` // populated for replay
 }
 
-// CallRecord is the complete record of one gRPC call.
 type CallRecord struct {
 	ID          string        `json:"id"`
 	Timestamp   time.Time     `json:"timestamp"`
@@ -51,24 +44,15 @@ type CallRecord struct {
 	DurationMs  float64       `json:"durationMs"`
 	Error       string        `json:"error,omitempty"`
 	Mutated     bool          `json:"mutated,omitempty"`
-	// GrpcurlCmd is a ready-to-paste grpcurl command reproducing this call.
-	// Populated at record time; omitted if request body can't be decoded.
-	GrpcurlCmd string `json:"grpcurlCmd,omitempty"`
+	GrpcurlCmd  string        `json:"grpcurlCmd,omitempty"`
 }
 
-// BuildGrpcurlCommand constructs a grpcurl CLI command that reproduces the
-// given CallRecord against targetAddr. Returns an empty string if the
-// request has no decoded JSON frame (e.g. compressed or opaque bytes).
-//
-// Example output:
-//
-//	grpcurl -plaintext -d '{"userId":"abc123"}' localhost:9999 user.UserService/GetUser
+// Example output: grpcurl -plaintext -d '{"userId":"abc123"}' localhost:9999 user.UserService/GetUser
 func BuildGrpcurlCommand(call *CallRecord, targetAddr string, useTLS bool) string {
 	if call == nil || len(call.Request) == 0 {
 		return ""
 	}
 
-	// Use the first request frame's JSON
 	frameJSON := ""
 	for _, f := range call.Request {
 		if f.JSON != "" {
@@ -77,7 +61,6 @@ func BuildGrpcurlCommand(call *CallRecord, targetAddr string, useTLS bool) strin
 		}
 	}
 
-	// Parse the gRPC path: "/pkg.Service/Method" → "pkg.Service/Method"
 	method := strings.TrimPrefix(call.Method, "/")
 	if method == "" {
 		return ""
@@ -85,7 +68,7 @@ func BuildGrpcurlCommand(call *CallRecord, targetAddr string, useTLS bool) strin
 
 	tlsFlag := "-plaintext"
 	if useTLS {
-		tlsFlag = "" // TLS by default in grpcurl
+		tlsFlag = "" // grpcurl defaults to TLS, so the flag is only needed for plaintext
 	}
 
 	var parts []string
@@ -95,10 +78,8 @@ func BuildGrpcurlCommand(call *CallRecord, targetAddr string, useTLS bool) strin
 	}
 
 	if frameJSON != "" {
-		// Compact the JSON for the -d flag; single-quote safe for bash
-		compact, err := compactJSON(frameJSON)
-		if err == nil && compact != "" {
-			parts = append(parts, "-d", "'"+compact+"'")
+		if compact, err := compactJSON(frameJSON); err == nil && compact != "" {
+			parts = append(parts, "-d", "'"+compact+"'") // compact + single-quoted so it's safe as one bash argument
 		}
 	}
 
@@ -106,7 +87,6 @@ func BuildGrpcurlCommand(call *CallRecord, targetAddr string, useTLS bool) strin
 	return strings.Join(parts, " ")
 }
 
-// compactJSON marshals JSON to a single line without extra whitespace.
 func compactJSON(s string) (string, error) {
 	var v interface{}
 	if err := json.Unmarshal([]byte(s), &v); err != nil {
@@ -119,20 +99,14 @@ func compactJSON(s string) (string, error) {
 	return string(b), nil
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// In-memory ring buffer
-// ─────────────────────────────────────────────────────────────────────────────
-
 const defaultRingSize = 500
 
-// Store is a thread-safe ring buffer of CallRecords.
 type Store struct {
 	mu      sync.RWMutex
 	records []*CallRecord
 	maxSize int
 }
 
-// NewStore creates a Store with a bounded capacity.
 func NewStore(maxSize int) *Store {
 	if maxSize <= 0 {
 		maxSize = defaultRingSize
@@ -140,7 +114,6 @@ func NewStore(maxSize int) *Store {
 	return &Store{maxSize: maxSize}
 }
 
-// Add appends a record, evicting the oldest if at capacity.
 func (s *Store) Add(r *CallRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,7 +123,6 @@ func (s *Store) Add(r *CallRecord) {
 	s.records = append(s.records, r)
 }
 
-// All returns a copy of all records, newest first.
 func (s *Store) All() []*CallRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -161,7 +133,6 @@ func (s *Store) All() []*CallRecord {
 	return out
 }
 
-// ByID finds a record by its ID.
 func (s *Store) ByID(id string) (*CallRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -173,25 +144,18 @@ func (s *Store) ByID(id string) (*CallRecord, bool) {
 	return nil, false
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SSE Event Hub
-// ─────────────────────────────────────────────────────────────────────────────
-
-// EventHub broadcasts CallRecord events to all active SSE subscribers.
 type EventHub struct {
 	mu            sync.RWMutex
 	subscribers   map[chan *CallRecord]struct{}
-	droppedEvents atomic.Int64 // total events dropped due to slow subscribers
+	droppedEvents atomic.Int64
 }
 
-// NewEventHub creates a new hub.
 func NewEventHub() *EventHub {
 	return &EventHub{
 		subscribers: make(map[chan *CallRecord]struct{}),
 	}
 }
 
-// Subscribe registers a new subscriber channel. Call Unsubscribe when done.
 func (h *EventHub) Subscribe() chan *CallRecord {
 	ch := make(chan *CallRecord, 32)
 	h.mu.Lock()
@@ -200,7 +164,6 @@ func (h *EventHub) Subscribe() chan *CallRecord {
 	return ch
 }
 
-// Unsubscribe removes and closes a subscriber channel.
 func (h *EventHub) Unsubscribe(ch chan *CallRecord) {
 	h.mu.Lock()
 	delete(h.subscribers, ch)
@@ -208,15 +171,10 @@ func (h *EventHub) Unsubscribe(ch chan *CallRecord) {
 	close(ch)
 }
 
-// DroppedEvents returns the total number of events silently dropped because a
-// subscriber was too slow to consume them. Expose this via /api/stats or a
-// Prometheus counter if you need alerting on UI lag.
 func (h *EventHub) DroppedEvents() int64 {
 	return h.droppedEvents.Load()
 }
 
-// Publish sends a call record to all subscribers (non-blocking; slow subscribers
-// get their oldest events dropped and the drop is counted).
 func (h *EventHub) Publish(r *CallRecord) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -224,19 +182,11 @@ func (h *EventHub) Publish(r *CallRecord) {
 		select {
 		case ch <- r:
 		default:
-			// subscriber too slow — drop rather than block the proxy,
-			// but track it so developers can diagnose a mysteriously
-			// incomplete call stream in the UI.
-			h.droppedEvents.Add(1)
+			h.droppedEvents.Add(1) // slow subscriber: drop rather than block the proxy, but count it
 		}
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Recorder: wires store + hub + optional NDJSON file together
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Recorder receives completed CallRecords and fans them out.
 type Recorder struct {
 	Store *Store
 	Hub   *EventHub
@@ -246,8 +196,6 @@ type Recorder struct {
 	enc     *json.Encoder
 }
 
-// New creates a Recorder. If logPath is non-empty, records are also written
-// to that file as NDJSON (one JSON object per line).
 func New(logPath string) (*Recorder, error) {
 	r := &Recorder{
 		Store: NewStore(defaultRingSize),
@@ -264,19 +212,17 @@ func New(logPath string) (*Recorder, error) {
 	return r, nil
 }
 
-// Record fans out a completed call to the store, hub, and log file.
 func (r *Recorder) Record(call *CallRecord) {
 	r.Store.Add(call)
 	r.Hub.Publish(call)
 
 	if r.enc != nil {
 		r.mu.Lock()
-		_ = r.enc.Encode(call) // NDJSON: encoder adds \n
+		_ = r.enc.Encode(call)
 		r.mu.Unlock()
 	}
 }
 
-// Close flushes and closes the log file (if open).
 func (r *Recorder) Close() error {
 	if r.logFile != nil {
 		return r.logFile.Close()
@@ -284,15 +230,10 @@ func (r *Recorder) Close() error {
 	return nil
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Replay
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ReplayRecord is the shape persisted in the NDJSON file for replay.
-// It is the same as CallRecord but we focus on Request frames.
+// Alias, not a distinct type: NDJSON replay reads the same records back in,
+// it just only cares about the Request frames.
 type ReplayRecord = CallRecord
 
-// ReadNDJSON reads CallRecords from an NDJSON log file.
 func ReadNDJSON(path string) ([]*ReplayRecord, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -320,9 +261,6 @@ func ReadNDJSON(path string) ([]*ReplayRecord, error) {
 	return records, nil
 }
 
-// BuildRawBody reassembles the raw gRPC wire body from a CallRecord's Request
-// frames. This is used by the replay engine to reconstruct the exact bytes
-// that were originally sent.
 func BuildRawBody(frames []FrameRecord) io.Reader {
 	var buf bytes.Buffer
 	for _, f := range frames {

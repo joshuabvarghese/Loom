@@ -27,15 +27,13 @@ import (
 	pb "github.com/joshuabvarghese/loom/testserver/gen"
 )
 
-// BackendServer is a live in-process gRPC backend for demo mode.
 type BackendServer struct {
 	addr   string
 	server *grpc.Server
 }
 
-// Start starts an embedded gRPC backend. addr may be empty (picks a free port)
-// or a specific address like "localhost:50052".
-// Returns the actual listen address.
+// Start starts an embedded gRPC backend. addr may be empty (picks a free
+// port) or a specific address like "localhost:50052".
 func Start(addr string) (*BackendServer, error) {
 	if addr == "" {
 		addr = "localhost:0"
@@ -56,23 +54,20 @@ func Start(addr string) (*BackendServer, error) {
 		}
 	}()
 
-	// Give the server a moment to be ready
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond) // give the server a moment to be listening before callers dial it
 	return bs, nil
 }
 
-// Addr returns the network address the backend is listening on.
 func (b *BackendServer) Addr() string { return b.addr }
 
-// Stop gracefully stops the embedded backend.
 func (b *BackendServer) Stop() { b.server.GracefulStop() }
 
-// SendSampleCalls sends representative gRPC calls through proxyAddr to populate
-// the Web Inspector with realistic traffic. Errors on "expected" calls (e.g.
-// NOT_FOUND) are silenced — they're intentional to demonstrate error display.
+// SendSampleCalls sends representative gRPC calls through proxyAddr to
+// populate the Web Inspector with realistic traffic. Errors on "expected"
+// calls (e.g. NOT_FOUND) are silenced — they're intentional, to demonstrate
+// error display.
 func SendSampleCalls(ctx context.Context, proxyAddr string) {
-	// Brief pause so the proxy is fully ready
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // let the proxy finish starting up
 
 	conn, err := grpc.NewClient(proxyAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -150,8 +145,6 @@ func isExpectedDemoError(err error) bool {
 	return false
 }
 
-// ── Embedded demo gRPC server ─────────────────────────────────────────────────
-
 type demoServer struct {
 	pb.UnimplementedUserServiceServer
 }
@@ -169,6 +162,16 @@ var seedUsers = map[string]*pb.User{
 	},
 }
 
+func newViewerUser(id, name, email string) *pb.User {
+	return &pb.User{
+		Id:        id,
+		Name:      name,
+		Email:     email,
+		Role:      pb.User_ROLE_VIEWER,
+		CreatedAt: timestamppb.Now(),
+	}
+}
+
 func (s *demoServer) GetUser(req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
 	if req.UserId == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
@@ -179,31 +182,16 @@ func (s *demoServer) GetUser(req *pb.GetUserRequest) (*pb.GetUserResponse, error
 	if u, ok := seedUsers[req.UserId]; ok {
 		return &pb.GetUserResponse{User: u}, nil
 	}
-	// Generate a plausible user for any other ID
-	return &pb.GetUserResponse{
-		User: &pb.User{
-			Id:        req.UserId,
-			Name:      "Demo User " + strings.ToUpper(req.UserId[:1]),
-			Email:     req.UserId + "@demo.example",
-			Role:      pb.User_ROLE_VIEWER,
-			CreatedAt: timestamppb.Now(),
-		},
-	}, nil
+	name := "Demo User " + strings.ToUpper(req.UserId[:1])
+	return &pb.GetUserResponse{User: newViewerUser(req.UserId, name, req.UserId+"@demo.example")}, nil
 }
 
 func (s *demoServer) CreateUser(req *pb.CreateUserRequest) (*pb.CreateUserResponse, error) {
 	if req.Name == "" || req.Email == "" {
 		return nil, status.Error(codes.InvalidArgument, "name and email are required")
 	}
-	return &pb.CreateUserResponse{
-		User: &pb.User{
-			Id:        fmt.Sprintf("usr_%d", time.Now().UnixMilli()),
-			Name:      req.Name,
-			Email:     req.Email,
-			Role:      pb.User_ROLE_VIEWER,
-			CreatedAt: timestamppb.Now(),
-		},
-	}, nil
+	id := fmt.Sprintf("usr_%d", time.Now().UnixMilli())
+	return &pb.CreateUserResponse{User: newViewerUser(id, req.Name, req.Email)}, nil
 }
 
 func (s *demoServer) ListUsers(req *pb.ListUsersRequest, stream pb.ListUsersServer) error {
@@ -235,13 +223,8 @@ func (s *demoServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.Bat
 		if err != nil {
 			break
 		}
-		created = append(created, &pb.User{
-			Id:        fmt.Sprintf("batch_%d", time.Now().UnixNano()),
-			Name:      req.Name,
-			Email:     req.Email,
-			Role:      pb.User_ROLE_VIEWER,
-			CreatedAt: timestamppb.Now(),
-		})
+		id := fmt.Sprintf("batch_%d", time.Now().UnixNano())
+		created = append(created, newViewerUser(id, req.Name, req.Email))
 	}
 	return &pb.BatchCreateUsersResponse{Created: int32(len(created)), Users: created}, nil
 }

@@ -1,11 +1,3 @@
-// Package store manages Loom's session persistence.
-//
-// A session is a named NDJSON file stored under ~/.loom/sessions/<name>.jsonl.
-// On startup the file is read to restore historical calls; new calls are
-// appended in real-time.
-//
-// The Store also wires together a Recorder (for live fan-out) and exposes
-// session metadata (name, call count).
 package store
 
 import (
@@ -19,13 +11,11 @@ import (
 	"github.com/joshuabvarghese/loom/internal/recorder"
 )
 
-// SessionInfo contains metadata about the current session.
 type SessionInfo struct {
 	Name  string
 	Count int
 }
 
-// Store combines persistent NDJSON storage with a live Recorder.
 type Store struct {
 	sessionName string
 	Recorder    *recorder.Recorder
@@ -33,8 +23,6 @@ type Store struct {
 	enc         *json.Encoder
 }
 
-// New opens (or creates) the session file for sessionName and returns a Store.
-// Historical calls are loaded into the in-memory ring buffer.
 func New(sessionName string) (*Store, error) {
 	dir, err := sessionDir()
 	if err != nil {
@@ -42,23 +30,19 @@ func New(sessionName string) (*Store, error) {
 	}
 
 	path := filepath.Join(dir, sessionName+".jsonl")
+	historical, _ := loadFile(path)
 
-	// Load historical calls first
-	historical, _ := loadFile(path) // ignore read errors on first run
-
-	// Open file for appending
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("opening session file %q: %w", path, err)
 	}
 
-	rec, err := recorder.New("") // no extra log file; we handle persistence here
+	rec, err := recorder.New("") // persistence is handled here, not by the recorder's own log file
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
 
-	// Seed ring buffer with historical records
 	for _, cr := range historical {
 		rec.Store.Add(cr)
 	}
@@ -70,7 +54,6 @@ func New(sessionName string) (*Store, error) {
 		enc:         json.NewEncoder(f),
 	}
 
-	// Tap into hub so every new call is also persisted
 	ch := rec.Hub.Subscribe()
 	go func() {
 		for call := range ch {
@@ -81,7 +64,6 @@ func New(sessionName string) (*Store, error) {
 	return s, nil
 }
 
-// SessionInfo returns metadata about the session.
 func (s *Store) SessionInfo() SessionInfo {
 	return SessionInfo{
 		Name:  s.sessionName,
@@ -89,15 +71,12 @@ func (s *Store) SessionInfo() SessionInfo {
 	}
 }
 
-// Close flushes and closes the underlying session file.
 func (s *Store) Close() error {
 	if s.file != nil {
 		return s.file.Close()
 	}
 	return nil
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func (s *Store) persist(call *recorder.CallRecord) {
 	if s.enc != nil {
@@ -106,7 +85,6 @@ func (s *Store) persist(call *recorder.CallRecord) {
 }
 
 func sessionDir() (string, error) {
-	// Allow override via env
 	if d := os.Getenv("LOOM_DATA_DIR"); d != "" {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return "", fmt.Errorf("creating LOOM_DATA_DIR %q: %w", d, err)
@@ -127,7 +105,7 @@ func sessionDir() (string, error) {
 func loadFile(path string) ([]*recorder.CallRecord, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err // file doesn't exist yet — that's fine
+		return nil, err // no session file yet is a normal first run, not an error the caller needs
 	}
 	defer f.Close()
 
@@ -141,7 +119,7 @@ func loadFile(path string) ([]*recorder.CallRecord, error) {
 		}
 		var cr recorder.CallRecord
 		if err := json.Unmarshal(line, &cr); err != nil {
-			continue // skip malformed lines
+			continue // corrupt line: skip it rather than fail the whole session load
 		}
 		records = append(records, &cr)
 	}

@@ -19,11 +19,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jhump/protoreflect/desc"
 	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
 	"github.com/joshuabvarghese/loom/internal/circuitbreaker"
+	"github.com/joshuabvarghese/loom/internal/h2sniff"
 	"github.com/joshuabvarghese/loom/internal/metrics"
 	"github.com/joshuabvarghese/loom/internal/mutator"
 	recpkg "github.com/joshuabvarghese/loom/internal/recorder"
@@ -32,13 +34,11 @@ import (
 	"github.com/joshuabvarghese/loom/internal/transcoder"
 )
 
-// MetaMutator is implemented by metadata.Engine.
 type MetaMutator interface {
 	Apply(method, direction string, h http.Header) bool
 	RuleCount() int
 }
 
-// Config holds all dependencies for the proxy handler.
 type Config struct {
 	BackendAddr          string
 	ListenAddr           string // used to build grpcurl commands; defaults to ":9999"
@@ -52,14 +52,13 @@ type Config struct {
 	Color                bool
 	BackendTLS           bool
 	BackendTLSSkipVerify bool
+	FrameSniffer         *h2sniff.Sniffer // nil disables HTTP/2 frame capture entirely
 }
 
-// Handler is an http.Handler that acts as a gRPC reverse proxy.
 type Handler struct {
 	cfg Config
 }
 
-// NewHandler creates a new proxy Handler.
 func NewHandler(cfg Config) *Handler {
 	return &Handler{cfg: cfg}
 }
@@ -69,12 +68,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	callID := fmt.Sprintf("%d", start.UnixNano())
 
-	// Attach request ID to context so all log lines for this call are correlated.
 	ctx := slogpkg.WithRequestID(r.Context(), callID)
-
 	slogpkg.Debug(ctx, "incoming call", "method", grpcMethod)
 
-	// Track in-flight call count.
 	metrics.SessionStart()
 	defer metrics.SessionEnd()
 
@@ -84,10 +80,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Method:    grpcMethod,
 	}
 
-	// ── Resolve method descriptor via gRPC reflection ─────────────────────────
 	methodInfo, reflectErr := h.cfg.Reflector.Resolve(ctx, grpcMethod)
 
-	// ── Detect streaming type ─────────────────────────────────────────────────
 	var isClientStream, isServerStream bool
 	if reflectErr == nil && methodInfo != nil {
 		md := methodInfo.Method
@@ -104,7 +98,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// streamKind returns the appropriate StreamKind based on the streaming flags.
 func streamKind(clientStream, serverStream bool) recpkg.StreamKind {
 	switch {
 	case clientStream && serverStream:
@@ -116,95 +109,89 @@ func streamKind(clientStream, serverStream bool) recpkg.StreamKind {
 	}
 }
 
-// ── Unary RPC ─────────────────────────────────────────────────────────────────
+// framesFromBytes decodes raw into individual FrameRecords when a message
+// descriptor is available, or wraps it as a single opaque frame otherwise.
+func framesFromBytes(raw []byte, msgDesc *desc.MessageDescriptor, haveDescriptor bool) []recpkg.FrameRecord {
+	if !haveDescriptor {
+		return []recpkg.FrameRecord{{Index: 0, Raw: raw}}
+	}
+	frames, _ := transcoder.DecodeStream(bytes.NewReader(raw), msgDesc)
+	out := make([]recpkg.FrameRecord, len(frames))
+	for i, f := range frames {
+		out[i] = recpkg.FrameRecord{Index: i, Raw: f.Raw, JSON: f.JSON}
+	}
+	return out
+}
 
-func (h *Handler) serveUnary(
+// mutateFirstFrame runs body-mutation rules against frames[0]'s JSON and, if
+// a rule fired, re-encodes it to wire format. It returns the new raw bytes,
+// or nil if nothing changed (so the caller's existing body can be reused).
+func (h *Handler) mutateFirstFrame(
 	ctx context.Context,
-	w http.ResponseWriter,
-	r *http.Request,
 	call *recpkg.CallRecord,
-	methodInfo *reflector.MethodInfo,
-	reflectErr error,
-	start time.Time,
-) {
-	// ── Read full request body ────────────────────────────────────────────────
-	reqBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "reading request body", http.StatusBadRequest)
-		return
-	}
-	r.Body.Close()
-
-	// ── Decode request frames ─────────────────────────────────────────────────
-	if reflectErr == nil && methodInfo != nil {
-		frames, _ := transcoder.DecodeStream(bytes.NewReader(reqBody), methodInfo.Input)
-		for i, f := range frames {
-			call.Request = append(call.Request, recpkg.FrameRecord{
-				Index: i,
-				Raw:   f.Raw,
-				JSON:  f.JSON,
-			})
-		}
-	} else {
-		call.Request = []recpkg.FrameRecord{{Index: 0, Raw: reqBody}}
+	frames []recpkg.FrameRecord,
+	dir mutator.Direction,
+	directionLabel string,
+	msgDesc *desc.MessageDescriptor,
+	haveDescriptor bool,
+) []byte {
+	if h.cfg.Mutator == nil || len(frames) == 0 || frames[0].JSON == "" {
+		return nil
 	}
 
-	// ── Apply body mutations on the request ───────────────────────────────────
-	if h.cfg.Mutator != nil && len(call.Request) > 0 && call.Request[0].JSON != "" {
-		newJSON, mutated, mutErr := h.cfg.Mutator.Apply(call.Method, mutator.DirRequest, call.Request[0].JSON)
-		if mutErr != nil {
-			slogpkg.Warn(ctx, "request mutation error", "err", mutErr)
-		} else if mutated {
-			call.Request[0].JSON = newJSON
-			call.Mutated = true
-			metrics.RecordMutation(call.Method, "request")
-			if reflectErr == nil && methodInfo != nil {
-				if raw, encErr := transcoder.BuildFrame(methodInfo.Input, newJSON); encErr == nil {
-					call.Request[0].Raw = raw
-					reqBody = raw
-				} else {
-					slogpkg.Warn(ctx, "could not re-encode mutated request frame", "err", encErr)
-				}
-			}
-		}
+	newJSON, mutated, mutErr := h.cfg.Mutator.Apply(call.Method, dir, frames[0].JSON)
+	if mutErr != nil {
+		slogpkg.Warn(ctx, directionLabel+" mutation error", "err", mutErr)
+		return nil
+	}
+	if !mutated {
+		return nil
 	}
 
-	// ── Apply header mutations ────────────────────────────────────────────────
-	upReqHeaders := r.Header.Clone()
-	if h.cfg.MetaMutator != nil {
-		if h.cfg.MetaMutator.Apply(call.Method, "request", upReqHeaders) {
-			call.Mutated = true
-			metrics.RecordMutation(call.Method, "request-header")
-		}
-	}
+	frames[0].JSON = newJSON
+	call.Mutated = true
+	metrics.RecordMutation(call.Method, directionLabel)
 
-	// ── Build upstream request ────────────────────────────────────────────────
+	if !haveDescriptor {
+		return nil
+	}
+	raw, encErr := transcoder.BuildFrame(msgDesc, newJSON)
+	if encErr != nil {
+		slogpkg.Warn(ctx, "could not re-encode mutated "+directionLabel+" frame", "err", encErr)
+		return nil
+	}
+	frames[0].Raw = raw
+	return raw
+}
+
+func (h *Handler) buildUpstreamRequest(ctx context.Context, method string, headers http.Header, body io.Reader) (*http.Request, error) {
 	scheme := "http"
 	if h.cfg.BackendTLS {
 		scheme = "https"
 	}
-	upstreamURL := fmt.Sprintf("%s://%s%s", scheme, h.cfg.BackendAddr, call.Method)
+	url := fmt.Sprintf("%s://%s%s", scheme, h.cfg.BackendAddr, method)
 
-	upReq, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
-		writeGRPCError(w, codes.Internal, fmt.Sprintf("building upstream request: %v", err))
-		return
+		return nil, err
 	}
-	for k, vs := range upReqHeaders {
+	for k, vs := range headers {
 		for _, v := range vs {
-			upReq.Header.Add(k, v)
+			req.Header.Add(k, v)
 		}
 	}
-	upReq.Header.Set("Content-Type", "application/grpc")
-	upReq.Header.Set("TE", "trailers")
+	req.Header.Set("Content-Type", "application/grpc")
+	req.Header.Set("TE", "trailers")
+	return req, nil
+}
 
-	// ── Forward to backend (wrapped in circuit breaker if configured) ─────────
-	transport := newH2Transport(h.cfg.BackendTLS, h.cfg.BackendTLSSkipVerify)
-
+// roundTrip performs upReq through transport, routed through the circuit
+// breaker when one is configured.
+func (h *Handler) roundTrip(transport *http2.Transport, upReq *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	doRoundTrip := func() error {
 		var rtErr error
-		resp, rtErr = transport.RoundTrip(upReq) //nolint:bodyclose // closed via defer resp.Body.Close() below
+		resp, rtErr = transport.RoundTrip(upReq) //nolint:bodyclose // closed via defer resp.Body.Close() by the caller
 		return rtErr
 	}
 
@@ -215,14 +202,57 @@ func (h *Handler) serveUnary(
 	} else {
 		tripErr = doRoundTrip()
 	}
+	return resp, tripErr
+}
 
+func (h *Handler) serveUnary(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	call *recpkg.CallRecord,
+	methodInfo *reflector.MethodInfo,
+	reflectErr error,
+	start time.Time,
+) {
+	haveDescriptor := reflectErr == nil && methodInfo != nil
+
+	reqBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "reading request body", http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+
+	var inputDesc, outputDesc *desc.MessageDescriptor
+	if haveDescriptor {
+		inputDesc, outputDesc = methodInfo.Input, methodInfo.Output
+	}
+
+	call.Request = framesFromBytes(reqBody, inputDesc, haveDescriptor)
+	if raw := h.mutateFirstFrame(ctx, call, call.Request, mutator.DirRequest, "request", inputDesc, haveDescriptor); raw != nil {
+		reqBody = raw
+	}
+
+	upReqHeaders := r.Header.Clone()
+	if h.cfg.MetaMutator != nil && h.cfg.MetaMutator.Apply(call.Method, "request", upReqHeaders) {
+		call.Mutated = true
+		metrics.RecordMutation(call.Method, "request-header")
+	}
+
+	upReq, err := h.buildUpstreamRequest(ctx, call.Method, upReqHeaders, bytes.NewReader(reqBody))
+	if err != nil {
+		writeGRPCError(w, codes.Internal, fmt.Sprintf("building upstream request: %v", err))
+		return
+	}
+
+	transport := newH2Transport(h.cfg.BackendTLS, h.cfg.BackendTLSSkipVerify, h.cfg.FrameSniffer)
+	resp, tripErr := h.roundTrip(transport, upReq)
 	if tripErr != nil {
 		h.handleTripErr(ctx, w, call, tripErr, start)
 		return
 	}
 	defer resp.Body.Close()
 
-	// ── Read response body ────────────────────────────────────────────────────
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		writeGRPCError(w, codes.Internal, "reading backend response")
@@ -230,52 +260,22 @@ func (h *Handler) serveUnary(
 		return
 	}
 
-	// ── Decode response frames ────────────────────────────────────────────────
-	if reflectErr == nil && methodInfo != nil {
-		frames, _ := transcoder.DecodeStream(bytes.NewReader(respBody), methodInfo.Output)
-		for i, f := range frames {
-			call.Response = append(call.Response, recpkg.FrameRecord{
-				Index: i,
-				Raw:   f.Raw,
-				JSON:  f.JSON,
-			})
-		}
-	} else {
-		call.Response = []recpkg.FrameRecord{{Index: 0, Raw: respBody}}
+	call.Response = framesFromBytes(respBody, outputDesc, haveDescriptor)
+	if raw := h.mutateFirstFrame(ctx, call, call.Response, mutator.DirResponse, "response", outputDesc, haveDescriptor); raw != nil {
+		respBody = raw
 	}
 
-	// ── Apply body mutations on the response ──────────────────────────────────
-	if h.cfg.Mutator != nil && len(call.Response) > 0 && call.Response[0].JSON != "" {
-		newJSON, mutated, mutErr := h.cfg.Mutator.Apply(call.Method, mutator.DirResponse, call.Response[0].JSON)
-		if mutErr != nil {
-			slogpkg.Warn(ctx, "response mutation error", "err", mutErr)
-		} else if mutated {
-			call.Response[0].JSON = newJSON
-			call.Mutated = true
-			metrics.RecordMutation(call.Method, "response")
-			if reflectErr == nil && methodInfo != nil {
-				if raw, encErr := transcoder.BuildFrame(methodInfo.Output, newJSON); encErr == nil {
-					call.Response[0].Raw = raw
-					respBody = raw
-				} else {
-					slogpkg.Warn(ctx, "could not re-encode mutated response frame", "err", encErr)
-				}
-			}
-		}
-	}
-
-	// ── Write response back to client ─────────────────────────────────────────
-	// gRPC allows "trailers-only" responses where grpc-status arrives in the initial
-	// HEADERS frame (resp.Header) rather than in a trailing HEADERS frame (resp.Trailer).
-	// Go's http2.Transport puts these in resp.Header. We must forward grpc-status and
-	// grpc-message as HTTP/2 trailers regardless, so we normalise them here.
+	// gRPC allows "trailers-only" responses where grpc-status arrives in the
+	// initial HEADERS frame (resp.Header) rather than a trailing one
+	// (resp.Trailer) — Go's http2.Transport surfaces these in resp.Header.
+	// We forward grpc-status/grpc-message as real HTTP/2 trailers either way.
 	grpcTrailers := make(map[string][]string)
 	for _, key := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
 		if vs := resp.Trailer.Values(key); len(vs) > 0 {
 			grpcTrailers[key] = vs
 		} else if vs := resp.Header.Values(key); len(vs) > 0 {
 			grpcTrailers[key] = vs
-			resp.Header.Del(key) // don't forward as a regular header
+			resp.Header.Del(key)
 		}
 	}
 	for k, vs := range resp.Trailer {
@@ -288,16 +288,14 @@ func (h *Handler) serveUnary(
 			w.Header().Add(k, v)
 		}
 	}
-	// Pre-declare all trailer keys so net/http emits them in the trailing HEADERS frame.
-	for k := range grpcTrailers {
+	for k := range grpcTrailers { // pre-declare so net/http emits them in the trailing HEADERS frame
 		w.Header().Add("Trailer", k)
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
-	// Write trailers via http.TrailerPrefix (works after WriteHeader in HTTP/2).
 	for k, vs := range grpcTrailers {
 		for _, v := range vs {
-			w.Header().Add(http.TrailerPrefix+k, v)
+			w.Header().Add(http.TrailerPrefix+k, v) // works after WriteHeader in HTTP/2
 		}
 	}
 	if flusher, ok := w.(http.Flusher); ok {
@@ -307,14 +305,10 @@ func (h *Handler) serveUnary(
 	h.finishCall(ctx, call, resp, start)
 }
 
-// ── Streaming RPC ─────────────────────────────────────────────────────────────
-
-// serveStreaming handles server-streaming, client-streaming, and bidi RPCs.
-//
-// Strategy: pipe the request body from the client to the backend via an
-// io.Pipe (so the backend sees a live stream, not a buffered blob), while
-// simultaneously reading response frames from the backend and forwarding them
-// to the client. Both halves run concurrently, recording frames as they arrive.
+// serveStreaming handles server-streaming, client-streaming, and bidi RPCs
+// by piping the request body to the backend through an io.Pipe (so the
+// backend sees a live stream, not a buffered blob) while concurrently
+// streaming the response back, recording frames on both sides as they arrive.
 func (h *Handler) serveStreaming(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -329,10 +323,11 @@ func (h *Handler) serveStreaming(
 		writeGRPCError(w, codes.Internal, "streaming not supported by this ResponseWriter")
 		return
 	}
+	haveDescriptor := reflectErr == nil && methodInfo != nil
 
-	// mutatedMu guards all writes to call.Mutated, which can be set from
-	// both the request-header mutation path (this goroutine) and the
-	// request-body mutation goroutine concurrently in bidi streaming calls.
+	// mutatedMu guards call.Mutated, which the request-header path (this
+	// goroutine) and the request-body goroutine can both set concurrently
+	// in a bidi-streaming call.
 	var mutatedMu sync.Mutex
 	setMutated := func() {
 		mutatedMu.Lock()
@@ -340,49 +335,37 @@ func (h *Handler) serveStreaming(
 		mutatedMu.Unlock()
 	}
 
-	// ── Apply header mutations ────────────────────────────────────────────────
 	upReqHeaders := r.Header.Clone()
-	if h.cfg.MetaMutator != nil {
-		if h.cfg.MetaMutator.Apply(call.Method, "request", upReqHeaders) {
-			setMutated()
-			metrics.RecordMutation(call.Method, "request-header")
-		}
+	if h.cfg.MetaMutator != nil && h.cfg.MetaMutator.Apply(call.Method, "request", upReqHeaders) {
+		setMutated()
+		metrics.RecordMutation(call.Method, "request-header")
 	}
 
-	// ── Pipe client body → backend ────────────────────────────────────────────
-	// We use an io.Pipe so the upstream sees a streaming body (not a buffer).
-	// A goroutine copies from r.Body → reqPipeW while simultaneously recording
-	// decoded request frames.
 	reqPipeR, reqPipeW := io.Pipe()
-
 	var reqMu sync.Mutex
 	var reqFrameIdx int
 
-	// reqCancel is used to signal the request-body goroutine to stop when the
-	// backend round-trip fails. Without this, the goroutine can block inside
-	// StreamFrames waiting to write to a pipe whose read-end is already closed,
-	// leaking until the client closes the connection.
+	// reqCancel signals the request-body goroutine to stop if the backend
+	// round-trip fails; otherwise it can block writing to a pipe whose
+	// read end is already closed, leaking until the client disconnects.
 	reqCtx, reqCancel := context.WithCancel(ctx)
 	defer reqCancel()
 
 	go func() {
 		defer reqPipeW.Close()
 
-		if reflectErr == nil && methodInfo != nil {
-			// Tee: raw bytes → reqPipeW AND decode frames for recording.
-			//
-			// StreamFrames reads from r.Body, writes raw bytes to pw, and
-			// emits decoded Frame values on a channel. We copy from pr to
-			// reqPipeW in a separate goroutine so backpressure flows correctly.
+		if haveDescriptor {
+			// Tee: raw bytes -> reqPipeW, and decode frames for recording.
+			// The copy from pr to reqPipeW runs in its own goroutine so
+			// backpressure flows correctly back to StreamFrames.
 			pr, pw := io.Pipe()
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				_, _ = io.Copy(reqPipeW, pr)
-				// When reqPipeW closes (e.g. on backend error), drain pr so
-				// the StreamFrames goroutine writing to pw is not permanently
-				// blocked.
+				// Drain pr once reqPipeW closes so StreamFrames (writing to
+				// pw) never blocks permanently on a dead downstream pipe.
 				_, _ = io.Copy(io.Discard, pr)
 			}()
 
@@ -409,78 +392,43 @@ func (h *Handler) serveStreaming(
 						JSON:  f.JSON,
 					})
 				case <-reqCtx.Done():
-					// Backend failed or context canceled; stop consuming.
 					pw.CloseWithError(reqCtx.Err())
 					wg.Wait()
 					return
 				}
 			}
-		} else {
-			// No descriptor — pipe raw bytes through and record them.
-			buf := make([]byte, 32*1024)
-			var idx int
-			for {
-				n, err := r.Body.Read(buf)
-				if n > 0 {
-					chunk := make([]byte, n)
-					copy(chunk, buf[:n])
-					if _, werr := reqPipeW.Write(chunk); werr != nil {
-						break
-					}
-					reqMu.Lock()
-					call.Request = append(call.Request, recpkg.FrameRecord{
-						Index: idx,
-						Raw:   chunk,
-					})
-					idx++
-					reqMu.Unlock()
-				}
-				if err != nil {
+		}
+
+		buf := make([]byte, 32*1024)
+		var idx int
+		for {
+			n, err := r.Body.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				if _, werr := reqPipeW.Write(chunk); werr != nil {
 					break
 				}
+				reqMu.Lock()
+				call.Request = append(call.Request, recpkg.FrameRecord{Index: idx, Raw: chunk})
+				idx++
+				reqMu.Unlock()
+			}
+			if err != nil {
+				break
 			}
 		}
 	}()
 
-	// ── Build upstream request with streaming body ────────────────────────────
-	scheme := "http"
-	if h.cfg.BackendTLS {
-		scheme = "https"
-	}
-	upstreamURL := fmt.Sprintf("%s://%s%s", scheme, h.cfg.BackendAddr, call.Method)
-
-	upReq, err := http.NewRequestWithContext(ctx, "POST", upstreamURL, reqPipeR)
+	upReq, err := h.buildUpstreamRequest(ctx, call.Method, upReqHeaders, reqPipeR)
 	if err != nil {
 		reqPipeR.CloseWithError(err)
 		writeGRPCError(w, codes.Internal, fmt.Sprintf("building upstream request: %v", err))
 		return
 	}
-	for k, vs := range upReqHeaders {
-		for _, v := range vs {
-			upReq.Header.Add(k, v)
-		}
-	}
-	upReq.Header.Set("Content-Type", "application/grpc")
-	upReq.Header.Set("TE", "trailers")
 
-	// ── Forward to backend ────────────────────────────────────────────────────
-	transport := newH2Transport(h.cfg.BackendTLS, h.cfg.BackendTLSSkipVerify)
-
-	var resp *http.Response
-	doRoundTrip := func() error {
-		var rtErr error
-		resp, rtErr = transport.RoundTrip(upReq) //nolint:bodyclose // closed via defer resp.Body.Close() below
-		return rtErr
-	}
-
-	var tripErr error
-	if h.cfg.CircuitBreaker != nil {
-		tripErr = h.cfg.CircuitBreaker.Call(doRoundTrip)
-		metrics.SetCircuitBreakerState(h.cfg.CircuitBreaker.State())
-	} else {
-		tripErr = doRoundTrip()
-	}
-
+	transport := newH2Transport(h.cfg.BackendTLS, h.cfg.BackendTLSSkipVerify, h.cfg.FrameSniffer)
+	resp, tripErr := h.roundTrip(transport, upReq)
 	if tripErr != nil {
 		reqCancel() // stop the request-body goroutine before closing the pipe
 		reqPipeR.CloseWithError(tripErr)
@@ -489,7 +437,6 @@ func (h *Handler) serveStreaming(
 	}
 	defer resp.Body.Close()
 
-	// ── Stream response frames back to client ─────────────────────────────────
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -499,9 +446,8 @@ func (h *Handler) serveStreaming(
 	flusher.Flush()
 
 	var respFrameIdx int
-
-	if reflectErr == nil && methodInfo != nil {
-		// Tee: raw bytes → w AND decode frames for recording.
+	if haveDescriptor {
+		// Tee: raw bytes -> w, and decode frames for recording.
 		pr, pw := io.Pipe()
 		var wg sync.WaitGroup
 		wg.Add(1)
@@ -536,7 +482,6 @@ func (h *Handler) serveStreaming(
 		pw.Close()
 		wg.Wait()
 	} else {
-		// No descriptor — pipe raw bytes and record chunks.
 		buf := make([]byte, 32*1024)
 		var idx int
 		for {
@@ -546,10 +491,7 @@ func (h *Handler) serveStreaming(
 				copy(chunk, buf[:n])
 				_, _ = w.Write(chunk)
 				flusher.Flush()
-				call.Response = append(call.Response, recpkg.FrameRecord{
-					Index: idx,
-					Raw:   chunk,
-				})
+				call.Response = append(call.Response, recpkg.FrameRecord{Index: idx, Raw: chunk})
 				idx++
 			}
 			if readErr != nil {
@@ -558,15 +500,14 @@ func (h *Handler) serveStreaming(
 		}
 	}
 
-	// Trailers arrive after the body is fully consumed.
-	// Handle both regular trailers and gRPC "trailers-only" responses where
-	// grpc-status arrives in the initial resp.Header rather than resp.Trailer.
+	// Trailers arrive after the body is fully consumed. Handle both regular
+	// trailers and the "trailers-only" case where grpc-status is in
+	// resp.Header instead of resp.Trailer.
 	for _, key := range []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"} {
 		if vs := resp.Header.Values(key); len(vs) > 0 && len(resp.Trailer.Values(key)) == 0 {
 			for _, v := range vs {
 				w.Header().Add(http.TrailerPrefix+key, v)
 			}
-			continue
 		}
 	}
 	for k, vs := range resp.Trailer {
@@ -581,9 +522,6 @@ func (h *Handler) serveStreaming(
 	h.finishCall(ctx, call, resp, start)
 }
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-// handleTripErr records a backend-unreachable error and writes a gRPC error response.
 func (h *Handler) handleTripErr(ctx context.Context, w http.ResponseWriter, call *recpkg.CallRecord, tripErr error, start time.Time) {
 	statusCode := codes.Unavailable
 	statusName := statusCode.String()
@@ -604,7 +542,6 @@ func (h *Handler) handleTripErr(ctx context.Context, w http.ResponseWriter, call
 	h.cfg.Recorder.Record(call)
 }
 
-// finishCall extracts gRPC status, builds the grpcurl command, logs, and records.
 func (h *Handler) finishCall(ctx context.Context, call *recpkg.CallRecord, resp *http.Response, start time.Time) {
 	statusCode := resp.Trailer.Get("grpc-status")
 	if statusCode == "" {
@@ -617,6 +554,7 @@ func (h *Handler) finishCall(ctx context.Context, call *recpkg.CallRecord, resp 
 	call.StatusName = grpcCodeName(statusCode)
 	call.GRPCMessage = resp.Trailer.Get("grpc-message")
 	call.DurationMs = ms(start)
+
 	grpcurlTarget := h.cfg.ListenAddr
 	if grpcurlTarget == "" || strings.HasPrefix(grpcurlTarget, ":") {
 		grpcurlTarget = "localhost" + grpcurlTarget
@@ -642,28 +580,35 @@ func (h *Handler) finishCall(ctx context.Context, call *recpkg.CallRecord, resp 
 	h.cfg.Recorder.Record(call)
 }
 
-// ── Low-level helpers ─────────────────────────────────────────────────────────
-
-// newH2Transport returns an http2.Transport configured for plain h2c or TLS.
-func newH2Transport(useTLS, skipVerify bool) *http2.Transport {
+func newH2Transport(useTLS, skipVerify bool, sniffer *h2sniff.Sniffer) *http2.Transport {
 	if useTLS {
 		return &http2.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: skipVerify}, //nolint:gosec
+			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+				conn, err := (&tls.Dialer{Config: cfg}).DialContext(ctx, network, addr)
+				if err != nil || sniffer == nil {
+					return conn, err
+				}
+				return sniffer.WrapDialedConn(conn), nil
+			},
 		}
 	}
-	// For h2c (cleartext HTTP/2) we supply a plain TCP dialer.
 	return &http2.Transport{
-		AllowHTTP: true,
+		AllowHTTP: true, // h2c: cleartext HTTP/2
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+			conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+			if err != nil || sniffer == nil {
+				return conn, err
+			}
+			return sniffer.WrapDialedConn(conn), nil
 		},
 	}
 }
 
 func writeGRPCError(w http.ResponseWriter, code codes.Code, msg string) {
 	w.Header().Set("Content-Type", "application/grpc")
-	// gRPC spec requires grpc-status and grpc-message in the trailing HEADERS frame.
-	// Pre-declare them so net/http knows they are trailers, then set via TrailerPrefix.
+	// The gRPC spec requires grpc-status/grpc-message in the trailing HEADERS
+	// frame; pre-declaring them as Trailer tells net/http to emit them that way.
 	w.Header().Set("Trailer", "Grpc-Status, Grpc-Message")
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set(http.TrailerPrefix+"Grpc-Status", fmt.Sprintf("%d", code))
@@ -692,10 +637,7 @@ func ms(start time.Time) float64 {
 }
 
 func printCall(call *recpkg.CallRecord, color bool) {
-	green := "\033[32m"
-	red := "\033[31m"
-	cyan := "\033[36m"
-	reset := "\033[0m"
+	green, red, cyan, reset := "\033[32m", "\033[31m", "\033[36m", "\033[0m"
 	if !color {
 		green, red, cyan, reset = "", "", "", ""
 	}

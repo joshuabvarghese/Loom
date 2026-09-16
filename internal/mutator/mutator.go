@@ -1,22 +1,3 @@
-// Package mutator provides a rule-based JSON mutation engine for Loom.
-//
-// Rules are loaded from a JSON file (one object per line or a JSON array).
-// Each rule specifies a method glob, a direction, and field overrides to apply.
-//
-// Example rules file (mutate.json):
-//
-//	[
-//	  {
-//	    "method": "/user.UserService/GetUser",
-//	    "direction": "request",
-//	    "set": {"userId": "injected-by-loom"}
-//	  },
-//	  {
-//	    "method": "/user.UserService/*",
-//	    "direction": "response",
-//	    "delete": ["user.createdAt"]
-//	  }
-//	]
 package mutator
 
 import (
@@ -27,7 +8,6 @@ import (
 	"strings"
 )
 
-// Direction controls which side of the call a rule applies to.
 type Direction string
 
 const (
@@ -36,70 +16,65 @@ const (
 	DirBoth     Direction = "both"
 )
 
-// Rule is a single mutation rule.
 type Rule struct {
-	// Method is an exact gRPC path or a glob (e.g. "/user.UserService/*").
-	Method string `json:"method"`
-	// Direction is "request", "response", or "both".
-	Direction Direction `json:"direction"`
-	// Set is a map of top-level JSON field names to new values.
-	// Nested paths use dot notation: "user.name".
-	Set map[string]json.RawMessage `json:"set,omitempty"`
-	// Delete is a list of top-level (or dotted) field names to remove.
-	Delete []string `json:"delete,omitempty"`
+	Method    string                     `json:"method"`
+	Direction Direction                  `json:"direction"`
+	Set       map[string]json.RawMessage `json:"set,omitempty"`
+	Delete    []string                   `json:"delete,omitempty"`
 }
 
-// Engine applies mutation rules to decoded JSON frames.
 type Engine struct {
 	rules []Rule
 }
 
-// NewEngine creates an Engine with no rules (pass-through).
 func NewEngine() *Engine {
 	return &Engine{}
 }
 
-// LoadRules creates an Engine from a rules file (JSON array or NDJSON).
 func LoadRules(path string) (*Engine, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading rules file %q: %w", path, err)
 	}
+	return LoadRulesFromBytes(data)
+}
 
-	var rules []Rule
-	// Try JSON array first
-	if err := json.Unmarshal(data, &rules); err != nil {
-		// Try NDJSON (one rule per line)
-		rules = nil
-		for i, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "//") {
-				continue
-			}
-			var r Rule
-			if err := json.Unmarshal([]byte(line), &r); err != nil {
-				return nil, fmt.Errorf("rules file line %d: %w", i+1, err)
-			}
-			rules = append(rules, r)
-		}
+func LoadRulesFromBytes(data []byte) (*Engine, error) {
+	rules, err := parseRules(data)
+	if err != nil {
+		return nil, err
 	}
-
 	return &Engine{rules: rules}, nil
 }
 
-// Apply runs all matching rules against the given JSON payload.
-// It returns the (potentially modified) JSON and whether any mutation occurred.
-// If no rules match or the payload is empty, the original is returned unchanged.
+func parseRules(data []byte) ([]Rule, error) {
+	var rules []Rule
+	if err := json.Unmarshal(data, &rules); err == nil {
+		return rules, nil
+	}
+
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		var r Rule
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			return nil, fmt.Errorf("rules line %d: %w", i+1, err)
+		}
+		rules = append(rules, r)
+	}
+	return rules, nil
+}
+
 func (e *Engine) Apply(method string, dir Direction, jsonPayload string) (string, bool, error) {
 	if len(e.rules) == 0 || jsonPayload == "" {
 		return jsonPayload, false, nil
 	}
 
-	// Parse the payload into a generic map
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(jsonPayload), &doc); err != nil {
-		// Not a JSON object (e.g. scalar) — skip
-		return jsonPayload, false, nil
+		return jsonPayload, false, nil // not a JSON object (e.g. a scalar) — nothing to mutate
 	}
 
 	mutated := false
@@ -111,15 +86,12 @@ func (e *Engine) Apply(method string, dir Direction, jsonPayload string) (string
 			continue
 		}
 
-		// Apply Set overrides
 		for k, v := range rule.Set {
 			if err := setNestedField(doc, k, v); err != nil {
 				return jsonPayload, false, fmt.Errorf("rule set %q: %w", k, err)
 			}
 			mutated = true
 		}
-
-		// Apply Delete removals
 		for _, k := range rule.Delete {
 			deleteNestedField(doc, k)
 			mutated = true
@@ -137,17 +109,12 @@ func (e *Engine) Apply(method string, dir Direction, jsonPayload string) (string
 	return string(out), true, nil
 }
 
-// RuleCount returns the number of loaded rules.
 func (e *Engine) RuleCount() int { return len(e.rules) }
 
-// ─── Internal helpers ──────────────────────────────────────────────────────────
-
-// matchesMethod supports exact match and simple glob (*).
 func matchesMethod(pattern, method string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
 	}
-	// Glob: "/pkg.Service/*" matches any method in that service
 	matched, err := filepath.Match(pattern, method)
 	if err != nil {
 		return pattern == method
@@ -162,14 +129,12 @@ func matchesDirection(ruleDir, callDir Direction) bool {
 	return ruleDir == callDir
 }
 
-// setNestedField sets a value at a dotted path in a generic JSON map.
-// e.g. "user.name" → doc["user"]["name"] = value
+// path uses dot notation, e.g. "user.name" -> doc["user"]["name"].
 func setNestedField(doc map[string]any, path string, value json.RawMessage) error {
 	parts := strings.SplitN(path, ".", 2)
 	key := parts[0]
 
 	if len(parts) == 1 {
-		// Leaf: decode the JSON value and set it
 		var v any
 		if err := json.Unmarshal(value, &v); err != nil {
 			return fmt.Errorf("decoding value for %q: %w", path, err)
@@ -178,23 +143,14 @@ func setNestedField(doc map[string]any, path string, value json.RawMessage) erro
 		return nil
 	}
 
-	// Intermediate node: ensure it's a map and recurse
-	rest := parts[1]
-	child, ok := doc[key]
+	child, ok := doc[key].(map[string]any)
 	if !ok {
 		child = map[string]any{}
 		doc[key] = child
 	}
-	childMap, ok := child.(map[string]any)
-	if !ok {
-		// Replace non-map with a map
-		childMap = map[string]any{}
-		doc[key] = childMap
-	}
-	return setNestedField(childMap, rest, value)
+	return setNestedField(child, parts[1], value)
 }
 
-// deleteNestedField removes a field at a dotted path.
 func deleteNestedField(doc map[string]any, path string) {
 	parts := strings.SplitN(path, ".", 2)
 	key := parts[0]
@@ -202,35 +158,9 @@ func deleteNestedField(doc map[string]any, path string) {
 		delete(doc, key)
 		return
 	}
-	child, ok := doc[key]
+	child, ok := doc[key].(map[string]any)
 	if !ok {
 		return
 	}
-	childMap, ok := child.(map[string]any)
-	if !ok {
-		return
-	}
-	deleteNestedField(childMap, parts[1])
-}
-
-// LoadRulesFromBytes creates an Engine from a JSON byte slice (array or NDJSON).
-// Useful in tests and when rules come from a source other than the filesystem.
-func LoadRulesFromBytes(data []byte) (*Engine, error) {
-	var rules []Rule
-	if err := json.Unmarshal(data, &rules); err != nil {
-		// Try NDJSON (one rule per line)
-		rules = nil
-		for i, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "//") {
-				continue
-			}
-			var r Rule
-			if err := json.Unmarshal([]byte(line), &r); err != nil {
-				return nil, fmt.Errorf("rules line %d: %w", i+1, err)
-			}
-			rules = append(rules, r)
-		}
-	}
-	return &Engine{rules: rules}, nil
+	deleteNestedField(child, parts[1])
 }

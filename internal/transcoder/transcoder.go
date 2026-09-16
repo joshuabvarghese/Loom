@@ -23,28 +23,18 @@ import (
 
 const grpcHeaderSize = 5
 
-// MaxFrameSize is the largest gRPC message body Loom will allocate memory
-// for. A raw uint32 from the wire can be up to ~4 GB; without a ceiling a
-// malformed or malicious frame causes an OOM before the read even fails.
-// 32 MB is generous for any real gRPC payload while remaining safe in
-// sidecar deployments.
-const MaxFrameSize = 32 * 1024 * 1024 // 32 MB
+// A raw uint32 length from the wire can claim up to ~4 GB; without a
+// ceiling, a malformed or malicious frame causes an OOM before the read
+// even fails. 32 MB is generous for any real gRPC payload.
+const MaxFrameSize = 32 * 1024 * 1024
 
-// Frame is a single decoded gRPC message.
 type Frame struct {
-	// Raw is the original bytes (header + body) so they can be forwarded unchanged.
-	Raw []byte
-	// JSON is the pretty-printed JSON representation (empty if decode failed).
-	JSON string
-	// Err is set when decoding failed but Raw is still valid for forwarding.
-	Err error
-	// Compressed is true when the compression flag byte was set.
+	Raw        []byte
+	JSON       string
+	Err        error
 	Compressed bool
 }
 
-// DecodeStream reads all gRPC frames from r, decoding each one using msgDesc.
-// It returns each Frame as decoded and the raw bytes for forwarding.
-// The function reads until EOF or an unrecoverable error.
 func DecodeStream(r io.Reader, msgDesc *desc.MessageDescriptor) ([]*Frame, error) {
 	var frames []*Frame
 	for {
@@ -60,9 +50,6 @@ func DecodeStream(r io.Reader, msgDesc *desc.MessageDescriptor) ([]*Frame, error
 	return frames, nil
 }
 
-// StreamFrames reads gRPC frames one by one from r, decoding each with msgDesc,
-// and writing the raw bytes to w. Each decoded Frame is sent on the returned channel.
-// The channel is closed when r returns EOF or an error.
 func StreamFrames(r io.Reader, w io.Writer, msgDesc *desc.MessageDescriptor) <-chan *Frame {
 	ch := make(chan *Frame, 8)
 	go func() {
@@ -70,7 +57,7 @@ func StreamFrames(r io.Reader, w io.Writer, msgDesc *desc.MessageDescriptor) <-c
 		for {
 			frame, err := readFrame(r, msgDesc)
 			if frame != nil {
-				// Always forward raw bytes, even if JSON decode failed
+				// Forward raw bytes regardless of whether JSON decoding succeeded.
 				if _, werr := w.Write(frame.Raw); werr != nil {
 					return
 				}
@@ -88,9 +75,7 @@ func StreamFrames(r io.Reader, w io.Writer, msgDesc *desc.MessageDescriptor) <-c
 	return ch
 }
 
-// readFrame reads exactly one length-prefixed gRPC message from r.
 func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
-	// Read the 5-byte gRPC envelope header
 	header := make([]byte, grpcHeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
 		if errors.Is(err, io.EOF) {
@@ -102,7 +87,6 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 	compressed := header[0] == 1
 	msgLen := binary.BigEndian.Uint32(header[1:5])
 
-	// Guard against enormous allocations from malformed or malicious frames.
 	if msgLen > MaxFrameSize {
 		return nil, fmt.Errorf(
 			"frame too large: %d bytes exceeds MaxFrameSize (%d); "+
@@ -111,7 +95,6 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 		)
 	}
 
-	// Read the protobuf payload
 	body := make([]byte, msgLen)
 	if msgLen > 0 {
 		if _, err := io.ReadFull(r, body); err != nil {
@@ -124,7 +107,6 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 	if compressed {
 		return &Frame{
 			Raw:        raw,
-			JSON:       "",
 			Compressed: true,
 			Err:        fmt.Errorf("compressed frames are not decoded (gzip compression detected)"),
 		}, nil
@@ -134,7 +116,6 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 		return &Frame{Raw: raw, JSON: fmt.Sprintf("(raw %d bytes — no descriptor)", msgLen)}, nil
 	}
 
-	// Unwrap to protoreflect.MessageDescriptor for dynamicpb
 	dynMsg := dynamicpb.NewMessage(msgDesc.UnwrapMessage())
 
 	if err := proto.Unmarshal(body, dynMsg); err != nil {
@@ -165,8 +146,6 @@ func readFrame(r io.Reader, msgDesc *desc.MessageDescriptor) (*Frame, error) {
 	}, nil
 }
 
-// BuildFrame encodes a JSON string back into a gRPC length-prefixed frame.
-// Returns an error if msgDesc is nil or the JSON cannot be parsed.
 func BuildFrame(msgDesc *desc.MessageDescriptor, jsonStr string) ([]byte, error) {
 	if msgDesc == nil {
 		return nil, fmt.Errorf("BuildFrame: nil message descriptor")
@@ -184,7 +163,7 @@ func BuildFrame(msgDesc *desc.MessageDescriptor, jsonStr string) ([]byte, error)
 	}
 
 	var buf bytes.Buffer
-	buf.WriteByte(0) // not compressed
+	buf.WriteByte(0) // compression flag: always uncompressed
 	lenBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBytes, uint32(len(body)))
 	buf.Write(lenBytes)

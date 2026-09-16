@@ -3,6 +3,7 @@ module github.com/joshuabvarghese/loom
 go 1.21
 
 require (
+	github.com/bufbuild/protocompile v0.8.0
 	github.com/jhump/protoreflect v1.15.6
 	github.com/prometheus/client_golang v1.19.0
 	golang.org/x/net v0.22.0
@@ -12,7 +13,6 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bufbuild/protocompile v0.8.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect

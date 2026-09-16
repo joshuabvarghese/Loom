@@ -1,6 +1,7 @@
 // Package reflector discovers gRPC method descriptors via Server Reflection.
-// Results are cached so each method is only looked up once per process, with a
-// configurable TTL to protect against stale descriptors after backend redeploys.
+// Results are cached so each method is only looked up once per process, with
+// a TTL so schema changes on the backend are eventually picked up without
+// restarting Loom.
 package reflector
 
 import (
@@ -18,28 +19,22 @@ import (
 	"google.golang.org/grpc"
 )
 
-// DefaultCacheTTL is how long a cached descriptor is considered fresh.
-// After this duration the next Resolve call will re-fetch from the backend
-// so that schema changes (new fields, renamed enums) are picked up
-// without restarting Loom.
 const DefaultCacheTTL = 5 * time.Minute
 
-// cacheEntry wraps a MethodInfo with its fetch timestamp.
 type cacheEntry struct {
 	info    *MethodInfo
 	fetchAt time.Time
 }
 
-// inflight tracks an in-progress fetch so concurrent callers for the same
-// fullPath block on the first caller rather than each spawning their own
-// reflection connection (stampede protection).
+// Tracks an in-progress fetch so concurrent callers for the same fullPath
+// block on the first caller instead of each opening its own reflection
+// connection (stampede protection).
 type inflight struct {
 	done chan struct{}
 	info *MethodInfo
 	err  error
 }
 
-// MethodInfo holds resolved descriptors for one RPC method.
 type MethodInfo struct {
 	FullMethod string
 	Method     *desc.MethodDescriptor
@@ -47,20 +42,17 @@ type MethodInfo struct {
 	Output     *desc.MessageDescriptor
 }
 
-// Reflector resolves gRPC method descriptors via Server Reflection,
-// caching after the first successful lookup.
 type Reflector struct {
 	conn     *grpc.ClientConn
 	cacheTTL time.Duration
 
 	mu      sync.RWMutex
 	cache   map[string]*cacheEntry
-	flights map[string]*inflight // in-progress fetches
+	flights map[string]*inflight
 
-	protoDir string // set by AddProtoDir; used as fallback when reflection fails
+	protoDir string // fallback source when reflection fails; set by AddProtoDir
 }
 
-// New creates a Reflector backed by conn.
 func New(conn *grpc.ClientConn) *Reflector {
 	return &Reflector{
 		conn:     conn,
@@ -70,28 +62,18 @@ func New(conn *grpc.ClientConn) *Reflector {
 	}
 }
 
-// WithCacheTTL overrides the descriptor cache TTL. Pass 0 to disable
-// expiry (equivalent to the old always-cached behavior).
+// Pass 0 to disable expiry (descriptors are cached forever once fetched).
 func (r *Reflector) WithCacheTTL(ttl time.Duration) *Reflector {
 	r.cacheTTL = ttl
 	return r
 }
 
-// AddProtoDir registers a directory of .proto files as a fallback source
-// used when server reflection is unavailable. The directory must exist and
-// contain at least one .proto file.
 func (r *Reflector) AddProtoDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("reading proto dir: %w", err)
 	}
-	count := 0
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".proto") {
-			count++
-		}
-	}
-	if count == 0 {
+	if !dirHasProtoFiles(entries) {
 		return fmt.Errorf("no .proto files found in %q", dir)
 	}
 	r.mu.Lock()
@@ -100,79 +82,75 @@ func (r *Reflector) AddProtoDir(dir string) error {
 	return nil
 }
 
-// Resolve returns the MethodInfo for fullPath (e.g. "/user.UserService/GetUser").
-//
-// Lookup order:
-//  1. Fresh cache hit (within cacheTTL).
-//  2. Server reflection (with stampede-protection so concurrent callers share
-//     one reflection connection per cache-miss).
-//  3. Proto-dir fallback (if AddProtoDir was called and reflection failed).
-//
-// Stale cache entries (older than cacheTTL) are re-fetched in the background;
-// the stale value is returned immediately so callers are never blocked on a
-// re-fetch of a descriptor that still works.
+func dirHasProtoFiles(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".proto") {
+			return true
+		}
+	}
+	return false
+}
+
+// Lookup order: fresh cache hit, then server reflection (stampede-protected
+// so concurrent callers share one fetch per cache miss), then the proto-dir
+// fallback if reflection fails and one was registered. A stale cache entry
+// is returned immediately while a refresh runs in the background, so an
+// active call is never blocked on a re-fetch of a descriptor that still works.
 func (r *Reflector) Resolve(ctx context.Context, fullPath string) (*MethodInfo, error) {
-	// 1. Cache lookup
 	r.mu.RLock()
 	entry, cached := r.cache[fullPath]
 	r.mu.RUnlock()
 
 	if cached {
-		fresh := r.cacheTTL == 0 || time.Since(entry.fetchAt) < r.cacheTTL
-		if fresh {
+		if r.cacheTTL == 0 || time.Since(entry.fetchAt) < r.cacheTTL {
 			return entry.info, nil
 		}
-		// Stale: return the current value immediately while refreshing in
-		// the background, so active calls are never blocked by a re-fetch.
 		go r.refreshCache(fullPath) //nolint:errcheck
 		return entry.info, nil
 	}
 
-	// 2. Parse fullPath
-	parts := strings.SplitN(strings.TrimPrefix(fullPath, "/"), "/", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid gRPC path %q — expected /Package.Service/Method", fullPath)
+	serviceName, methodName, err := splitFullPath(fullPath)
+	if err != nil {
+		return nil, err
 	}
-	serviceName, methodName := parts[0], parts[1]
-
-	// 3. Stampede-protected fetch
 	return r.fetchWithSingleflight(ctx, fullPath, serviceName, methodName)
 }
 
-// refreshCache re-fetches the descriptor for fullPath and updates the cache.
-// Called in a goroutine for stale-while-revalidate behavior.
-func (r *Reflector) refreshCache(fullPath string) {
+func splitFullPath(fullPath string) (service, method string, err error) {
 	parts := strings.SplitN(strings.TrimPrefix(fullPath, "/"), "/", 2)
 	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid gRPC path %q — expected /Package.Service/Method", fullPath)
+	}
+	return parts[0], parts[1], nil
+}
+
+func (r *Reflector) refreshCache(fullPath string) {
+	svc, method, err := splitFullPath(fullPath)
+	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	info, err := r.resolveFromSources(ctx, parts[0], parts[1], fullPath)
+	info, err := r.resolveFromSources(ctx, svc, method, fullPath)
 	if err != nil {
-		return // keep the stale entry; next call will retry
+		return // keep the stale entry; the next call will retry
 	}
 	r.mu.Lock()
 	r.cache[fullPath] = &cacheEntry{info: info, fetchAt: time.Now()}
 	r.mu.Unlock()
 }
 
-// fetchWithSingleflight ensures that concurrent cache-miss callers for the
-// same fullPath share a single reflection fetch rather than each spawning
-// their own connection (stampede protection).
 func (r *Reflector) fetchWithSingleflight(
 	ctx context.Context,
 	fullPath, serviceName, methodName string,
 ) (*MethodInfo, error) {
 	r.mu.Lock()
-	// Double-check: another goroutine may have populated the cache while we
-	// were waiting for the write lock.
+	// Another goroutine may have populated the cache while we waited for the lock.
 	if entry, ok := r.cache[fullPath]; ok {
 		r.mu.Unlock()
 		return entry.info, nil
 	}
 
-	// Is there already an in-progress fetch for this path?
 	if fl, ok := r.flights[fullPath]; ok {
 		r.mu.Unlock()
 		select {
@@ -183,12 +161,10 @@ func (r *Reflector) fetchWithSingleflight(
 		return fl.info, fl.err
 	}
 
-	// We are the leader; register the inflight record.
 	fl := &inflight{done: make(chan struct{})}
 	r.flights[fullPath] = fl
 	r.mu.Unlock()
 
-	// Perform the actual fetch (reflection first, then proto-dir fallback).
 	info, err := r.resolveFromSources(ctx, serviceName, methodName, fullPath)
 
 	fl.info, fl.err = info, err
@@ -204,8 +180,6 @@ func (r *Reflector) fetchWithSingleflight(
 	return info, err
 }
 
-// resolveFromSources tries server reflection first and falls back to the
-// proto-dir parser if reflection fails and a directory has been registered.
 func (r *Reflector) resolveFromSources(
 	ctx context.Context,
 	svc, method, full string,
@@ -233,7 +207,6 @@ func (r *Reflector) resolveFromSources(
 	return info, nil
 }
 
-// fetchFromServer fetches the method descriptor via gRPC Server Reflection.
 func (r *Reflector) fetchFromServer(ctx context.Context, svc, method, full string) (*MethodInfo, error) {
 	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -262,9 +235,6 @@ func (r *Reflector) fetchFromServer(ctx context.Context, svc, method, full strin
 	}, nil
 }
 
-// fetchFromProtoDir parses .proto files in dir using protocompile and resolves
-// the requested service/method. This is the fallback path for backends that
-// have server reflection disabled in production.
 func (r *Reflector) fetchFromProtoDir(
 	ctx context.Context,
 	dir, svc, method, full string,
@@ -295,12 +265,8 @@ func (r *Reflector) fetchFromProtoDir(
 		return nil, fmt.Errorf("compiling proto files in %q: %w", dir, err)
 	}
 
-	// Search compiled files for the requested service.
 	for i := 0; i < len(linked); i++ {
-		f := linked[i]
-
-		// Wrap in jhump desc types that the rest of Loom expects.
-		jDesc, wrapErr := desc.WrapFile(f)
+		jDesc, wrapErr := desc.WrapFile(linked[i]) // wrap into the jhump desc types the rest of Loom expects
 		if wrapErr != nil {
 			continue
 		}

@@ -24,12 +24,19 @@ import (
 	pb "github.com/joshuabvarghese/loom/testserver/gen"
 )
 
-// userServer implements pb.UserServiceServer.
 type userServer struct {
 	pb.UnimplementedUserServiceServer
 }
 
-// ── Unary ────────────────────────────────────────────────────────────────────
+func newViewerUser(id, name, email string) *pb.User {
+	return &pb.User{
+		Id:        id,
+		Name:      name,
+		Email:     email,
+		Role:      pb.User_ROLE_VIEWER,
+		CreatedAt: timestamppb.Now(),
+	}
+}
 
 func (s *userServer) GetUser(req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
 	fmt.Printf("[backend] GetUser  user_id=%q\n", req.UserId)
@@ -55,20 +62,10 @@ func (s *userServer) CreateUser(req *pb.CreateUserRequest) (*pb.CreateUserRespon
 	if req.Name == "" || req.Email == "" {
 		return nil, status.Error(codes.InvalidArgument, "name and email are required")
 	}
-	return &pb.CreateUserResponse{
-		User: &pb.User{
-			Id:        fmt.Sprintf("usr_%d", time.Now().UnixMilli()),
-			Name:      req.Name,
-			Email:     req.Email,
-			Role:      pb.User_ROLE_VIEWER,
-			CreatedAt: timestamppb.Now(),
-		},
-	}, nil
+	id := fmt.Sprintf("usr_%d", time.Now().UnixMilli())
+	return &pb.CreateUserResponse{User: newViewerUser(id, req.Name, req.Email)}, nil
 }
 
-// ── Server-streaming: ListUsers ──────────────────────────────────────────────
-
-// sampleUsers is the fixed roster the test server streams.
 var sampleUsers = []*pb.User{
 	{Id: "u1", Name: "Ada Lovelace", Email: "ada@example.com", Role: pb.User_ROLE_ADMIN},
 	{Id: "u2", Name: "Grace Hopper", Email: "grace@example.com", Role: pb.User_ROLE_EDITOR},
@@ -91,14 +88,11 @@ func (s *userServer) ListUsers(req *pb.ListUsersRequest, stream pb.ListUsersServ
 		if req.Limit > 0 && int32(sent) >= req.Limit {
 			break
 		}
-		// Small delay so the streaming behavior is visible in the UI.
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // visible pacing so streaming is easy to see in the UI
 	}
 	fmt.Printf("[backend] ListUsers  sent %d user(s)\n", sent)
 	return nil
 }
-
-// ── Client-streaming: BatchCreateUsers ───────────────────────────────────────
 
 func (s *userServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.BatchCreateUsersResponse, error) {
 	fmt.Printf("[backend] BatchCreateUsers  receiving...\n")
@@ -114,13 +108,7 @@ func (s *userServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.Bat
 		if req.Name == "" || req.Email == "" {
 			return nil, status.Error(codes.InvalidArgument, "name and email are required")
 		}
-		u := &pb.User{
-			Id:        fmt.Sprintf("usr_%d", time.Now().UnixNano()),
-			Name:      req.Name,
-			Email:     req.Email,
-			Role:      pb.User_ROLE_VIEWER,
-			CreatedAt: timestamppb.Now(),
-		}
+		u := newViewerUser(fmt.Sprintf("usr_%d", time.Now().UnixNano()), req.Name, req.Email)
 		created = append(created, u)
 		fmt.Printf("[backend] BatchCreateUsers  created %q\n", u.Name)
 	}
@@ -129,8 +117,6 @@ func (s *userServer) BatchCreateUsers(stream pb.BatchCreateUsersServer) (*pb.Bat
 		Users:   created,
 	}, nil
 }
-
-// ── Bidi-streaming: WatchUsers ────────────────────────────────────────────────
 
 func (s *userServer) WatchUsers(stream pb.WatchUsersServer) error {
 	fmt.Printf("[backend] WatchUsers  connected\n")
@@ -144,7 +130,6 @@ func (s *userServer) WatchUsers(stream pb.WatchUsersServer) error {
 		}
 		fmt.Printf("[backend] WatchUsers  watching user_id=%q\n", req.UserId)
 
-		// Echo back a synthetic "created" event for the requested user.
 		resp := &pb.WatchUsersResponse{
 			Event: pb.WatchEvent_CREATED,
 			User: &pb.User{
@@ -161,8 +146,6 @@ func (s *userServer) WatchUsers(stream pb.WatchUsersServer) error {
 	}
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
-
 func main() {
 	addr := flag.String("addr", ":50051", "listen address")
 	flag.Parse()
@@ -174,7 +157,7 @@ func main() {
 
 	srv := grpc.NewServer()
 	pb.RegisterUserServiceServer(srv, &userServer{})
-	reflection.Register(srv) // ← required for Loom to decode messages
+	reflection.Register(srv) // required for Loom to decode messages
 
 	fmt.Printf("🚀 test backend on %s\n", *addr)
 	fmt.Printf("   service: user.UserService\n")

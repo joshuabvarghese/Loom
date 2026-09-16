@@ -20,7 +20,18 @@
 #         - containerPort: 9999  # gRPC proxy
 #         - containerPort: 9998  # Web Inspector
 
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
+# ── Stage 1: Build frontend ──────────────────────────────────────────────────
+FROM node:22-alpine AS frontend
+
+WORKDIR /build/webui
+COPY webui/package.json webui/package-lock.json* ./
+RUN npm ci
+
+COPY webui/ ./
+RUN npm run build
+# Vite's outDir (../internal/webui/dist) lands at /build/internal/webui/dist
+
+# ── Stage 2: Build backend ───────────────────────────────────────────────────
 FROM golang:1.22-alpine AS builder
 
 ARG VERSION=dev
@@ -30,14 +41,15 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build a fully static binary
+# Copy source, pull in the compiled frontend, then build a fully static binary
 COPY . .
+COPY --from=frontend /build/internal/webui/dist ./internal/webui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${VERSION}" \
     -o loom .
 
-# ── Stage 2: Minimal runtime image ───────────────────────────────────────────
+# ── Stage 3: Minimal runtime image ───────────────────────────────────────────
 FROM scratch
 
 # CA certificates for TLS backend connections

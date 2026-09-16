@@ -1,29 +1,3 @@
-// Package config loads Loom's configuration from a TOML or YAML file,
-// merging it with CLI flags (flags always win over file values).
-//
-// Search order (first found wins):
-//  1. Path given by --config flag
-//  2. ./loom.toml  or  ./loom.yaml
-//  3. ~/.config/loom/config.toml  or  ~/.config/loom/config.yaml
-//
-// A missing file is not an error — Loom operates perfectly from flags alone.
-//
-// Example loom.toml:
-//
-//	listen      = ":9999"
-//	backend     = "localhost:50051"
-//	session     = "default"
-//	ui          = ":9998"
-//	verbose     = false
-//	no_color    = false
-//	backend_tls = false
-//
-//	[mutate]
-//	  file = "/etc/loom/rules.json"
-//
-//	[log]
-//	  file  = "/var/log/loom/calls.jsonl"
-//	  level = "info"   # debug | info | warn | error
 package config
 
 import (
@@ -34,8 +8,6 @@ import (
 	"strings"
 )
 
-// File mirrors the structure of loom.toml / loom.yaml.
-// All fields are optional; zero values mean "defer to the CLI flag default".
 type File struct {
 	Listen               string `json:"listen"`
 	Backend              string `json:"backend"`
@@ -58,12 +30,8 @@ type File struct {
 	} `json:"log"`
 }
 
-// Load reads a config file from path.  If path is empty, the default search
-// locations are tried in order.  Returns a zero-value File (not an error)
-// when no config file is found, so all-flag operation keeps working.
 func Load(path string) (*File, error) {
-	candidates := buildCandidates(path)
-	for _, c := range candidates {
+	for _, c := range buildCandidates(path) {
 		if c == "" {
 			continue
 		}
@@ -74,27 +42,29 @@ func Load(path string) (*File, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading config %q: %w", c, err)
 		}
-
-		var f File
-		ext := strings.ToLower(filepath.Ext(c))
-		switch ext {
-		case ".toml":
-			if err := parseTOML(data, &f); err != nil {
-				return nil, fmt.Errorf("parsing TOML config %q: %w", c, err)
-			}
-		case ".yaml", ".yml":
-			if err := parseYAML(data, &f); err != nil {
-				return nil, fmt.Errorf("parsing YAML config %q: %w", c, err)
-			}
-		default:
-			// Fallback: try JSON (convenient for programmatic generation).
-			if err := json.Unmarshal(data, &f); err != nil {
-				return nil, fmt.Errorf("parsing config %q (unrecognized extension, tried JSON): %w", c, err)
-			}
-		}
-		return &f, nil
+		return parseConfigFile(c, data)
 	}
-	return &File{}, nil // no file found — not an error
+	return &File{}, nil
+}
+
+func parseConfigFile(path string, data []byte) (*File, error) {
+	var f File
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		if err := parseTOML(data, &f); err != nil {
+			return nil, fmt.Errorf("parsing TOML config %q: %w", path, err)
+		}
+	case ".yaml", ".yml":
+		if err := parseYAML(data, &f); err != nil {
+			return nil, fmt.Errorf("parsing YAML config %q: %w", path, err)
+		}
+	default:
+		// Unrecognized extension: accept JSON too, for programmatic config generation.
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("parsing config %q (unrecognized extension, tried JSON): %w", path, err)
+		}
+	}
+	return &f, nil
 }
 
 func buildCandidates(explicit string) []string {
@@ -110,9 +80,9 @@ func buildCandidates(explicit string) []string {
 	}
 }
 
-// ── minimal TOML subset parser ────────────────────────────────────────────────
-// Handles the flat + one-level section structure that loom.toml requires.
-// For full TOML spec compliance, swap in github.com/BurntSushi/toml.
+// Minimal hand-rolled subset covering only the flat + one-level-section
+// shape loom.toml needs. Swap in github.com/BurntSushi/toml if full TOML
+// spec compliance is ever required.
 func parseTOML(data []byte, f *File) error {
 	section := ""
 	for _, raw := range strings.Split(string(data), "\n") {
@@ -130,19 +100,14 @@ func parseTOML(data []byte, f *File) error {
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.Trim(strings.TrimSpace(parts[1]), `"`)
-
-		fullKey := key
-		if section != "" {
-			fullKey = section + "." + key
-		}
-		applyField(f, fullKey, val)
+		applyField(f, qualifiedKey(section, key), val)
 	}
 	return nil
 }
 
-// ── minimal YAML subset parser ────────────────────────────────────────────────
-// Handles key: value and one-level indented sections.
-// For full YAML spec compliance, swap in gopkg.in/yaml.v3.
+// Minimal hand-rolled subset covering only "key: value" plus one level of
+// indented sections. Swap in gopkg.in/yaml.v3 if full YAML spec compliance
+// is ever required.
 func parseYAML(data []byte, f *File) error {
 	section := ""
 	for _, raw := range strings.Split(string(data), "\n") {
@@ -150,9 +115,7 @@ func parseYAML(data []byte, f *File) error {
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		// Section header: no leading spaces, ends with ":", no ": " (not a kv pair)
-		if !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t") &&
-			strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, ": ") {
+		if isYAMLSectionHeader(raw, trimmed) {
 			section = strings.TrimSuffix(trimmed, ":")
 			continue
 		}
@@ -164,15 +127,29 @@ func parseYAML(data []byte, f *File) error {
 		val := strings.TrimSpace(parts[1])
 
 		fullKey := key
-		isIndented := strings.HasPrefix(raw, " ") || strings.HasPrefix(raw, "\t")
-		if section != "" && isIndented {
-			fullKey = section + "." + key
+		if section != "" && isIndentedLine(raw) {
+			fullKey = qualifiedKey(section, key)
 		} else {
 			section = ""
 		}
 		applyField(f, fullKey, val)
 	}
 	return nil
+}
+
+func isYAMLSectionHeader(raw, trimmed string) bool {
+	return !isIndentedLine(raw) && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, ": ")
+}
+
+func isIndentedLine(raw string) bool {
+	return strings.HasPrefix(raw, " ") || strings.HasPrefix(raw, "\t")
+}
+
+func qualifiedKey(section, key string) string {
+	if section == "" {
+		return key
+	}
+	return section + "." + key
 }
 
 func applyField(f *File, key, val string) {

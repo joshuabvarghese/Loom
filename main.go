@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/joshuabvarghese/loom/demo"
 	"github.com/joshuabvarghese/loom/internal/circuitbreaker"
 	"github.com/joshuabvarghese/loom/internal/config"
+	"github.com/joshuabvarghese/loom/internal/h2sniff"
 	"github.com/joshuabvarghese/loom/internal/health"
 	"github.com/joshuabvarghese/loom/internal/metadata"
 	"github.com/joshuabvarghese/loom/internal/metrics"
@@ -35,9 +37,7 @@ import (
 	"github.com/joshuabvarghese/loom/proxy"
 )
 
-// Version is injected at build time via:
-//
-//	go build -ldflags "-X main.Version=v0.2.0" .
+// Injected at build time via: go build -ldflags "-X main.Version=v0.2.0" .
 var Version = "dev"
 
 const banner = `
@@ -76,14 +76,12 @@ func main() {
 
 	fmt.Printf(banner, Version)
 
-	// ── Load config file; CLI flags override file values ──────────────────────
 	cfg, err := config.Load(*configFile)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 	applyConfigDefaults(cfg, listenAddr, backendAddr, sessionName, logFile, mutateFile, protoDir, uiAddr, verbose, noColor)
 
-	// ── Structured logging ────────────────────────────────────────────────────
 	switch strings.ToLower(cfg.Log.Level) {
 	case "debug":
 		slogpkg.SetLevel(slogpkg.LevelDebug)
@@ -98,19 +96,16 @@ func main() {
 		slogpkg.SetLevel(slogpkg.LevelDebug)
 	}
 
-	// ── Demo mode ─────────────────────────────────────────────────────────────
 	if *demoMode {
 		runDemoMode(*listenAddr, *uiAddr)
 		return
 	}
 
-	// ── Replay mode ───────────────────────────────────────────────────────────
 	if *replayFile != "" {
 		runReplay(*replayFile, *backendAddr, *backendTLS)
 		return
 	}
 
-	// ── Normal proxy mode ─────────────────────────────────────────────────────
 	fmt.Printf("  Listening on : %s\n", *listenAddr)
 	fmt.Printf("  Proxying to  : %s\n", *backendAddr)
 	if *backendTLS {
@@ -149,13 +144,12 @@ func main() {
 }
 
 // applyConfigDefaults applies file config values to flag pointers only when
-// the flag still holds its default value (i.e. was not explicitly passed).
+// the flag still holds its default (i.e. wasn't explicitly passed on the CLI).
 func applyConfigDefaults(
 	cfg *config.File,
 	listenAddr, backendAddr, sessionName, logFile, mutateFile, protoDir, uiAddr *string,
 	verbose, noColor *bool,
 ) {
-	// Use flag.Visit to collect explicitly-set flag names.
 	set := make(map[string]bool)
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
@@ -188,8 +182,6 @@ func applyConfigDefaults(
 	}
 }
 
-// ── Demo ──────────────────────────────────────────────────────────────────────
-
 func runDemoMode(listenAddr, uiAddr string) {
 	fmt.Println("  ✨ Demo mode — no backend required")
 	fmt.Println()
@@ -219,8 +211,6 @@ func runDemoMode(listenAddr, uiAddr string) {
 	})
 }
 
-// ── Core proxy runner ─────────────────────────────────────────────────────────
-
 type proxyConfig struct {
 	listenAddr     string
 	backendAddr    string
@@ -233,25 +223,20 @@ type proxyConfig struct {
 	uiAddr         string
 	verbose        bool
 	noColor        bool
-	// onReady is called in a goroutine once the proxy is listening.
-	// It receives the actual bound address (e.g. "127.0.0.1:9999").
-	onReady func(addr string)
+	onReady        func(addr string) // called in a goroutine with the actual bound address once the proxy is listening
 }
 
 func runProxy(cfg proxyConfig) {
 	ctx := context.Background()
 
-	// ── Circuit breaker ───────────────────────────────────────────────────────
 	cb := circuitbreaker.New(circuitbreaker.Options{
 		Threshold: 5,
 		Timeout:   30 * time.Second,
 	})
 
-	// ── Health checker ────────────────────────────────────────────────────────
 	hc := health.New()
 	hc.SetCircuitBreaker(cb)
 
-	// ── Connect to backend ────────────────────────────────────────────────────
 	var creds credentials.TransportCredentials
 	if cfg.backendTLS {
 		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: cfg.backendTLSSkip}) //nolint:gosec
@@ -275,7 +260,6 @@ func runProxy(cfg proxyConfig) {
 	hc.SetBackendReady(true)
 	fmt.Printf("  ✓ Connected to backend at %s\n\n", cfg.backendAddr)
 
-	// ── Reflector ─────────────────────────────────────────────────────────────
 	res := reflector.New(conn)
 	if cfg.protoDir != "" {
 		if addErr := res.AddProtoDir(cfg.protoDir); addErr != nil {
@@ -285,7 +269,9 @@ func runProxy(cfg proxyConfig) {
 		}
 	}
 
-	// ── Session store ─────────────────────────────────────────────────────────
+	// See internal/h2sniff for why frame telemetry can't just be a hook into net/http2.
+	h2snf := h2sniff.New(0)
+
 	sessionStore, err := store.New(cfg.sessionName)
 	if err != nil {
 		log.Fatalf("❌  Session store: %v", err)
@@ -296,7 +282,6 @@ func runProxy(cfg proxyConfig) {
 	fmt.Printf("  ✓ Session %q  (%d historical calls)\n\n", si.Name, si.Count)
 	rec := sessionStore.Recorder
 
-	// Mirror to an extra log file if requested.
 	if cfg.logFile != "" {
 		extraRec, lerr := recorder.New(cfg.logFile)
 		if lerr != nil {
@@ -311,7 +296,6 @@ func runProxy(cfg proxyConfig) {
 		}()
 	}
 
-	// ── Mutation engines ──────────────────────────────────────────────────────
 	var mut *mutator.Engine
 	var metaMut *metadata.Engine
 	if cfg.mutateFile != "" {
@@ -330,13 +314,12 @@ func runProxy(cfg proxyConfig) {
 		}
 	}
 
-	// ── Web Inspector + health + metrics ──────────────────────────────────────
 	if cfg.uiAddr != "" {
 		proxyHostPort := "localhost" + cfg.listenAddr
 		replayFn := func(call *recorder.CallRecord) (string, error) {
 			return replaySingleCall(call, cfg.listenAddr, cfg.backendTLS)
 		}
-		uiServer := webui.NewWithOptions(rec, replayFn, proxyHostPort, cfg.backendTLS)
+		uiServer := webui.NewWithOptions(rec, replayFn, res, h2snf, proxyHostPort, cfg.backendTLS)
 		uiLis, lisErr := net.Listen("tcp", cfg.uiAddr)
 		if lisErr != nil {
 			log.Fatalf("❌  UI listen %s: %v", cfg.uiAddr, lisErr)
@@ -357,7 +340,6 @@ func runProxy(cfg proxyConfig) {
 		fmt.Printf("  ✓ Web Inspector at http://localhost%s\n\n", cfg.uiAddr)
 	}
 
-	// ── Proxy handler ─────────────────────────────────────────────────────────
 	proxyCfg := proxy.Config{
 		BackendAddr:          cfg.backendAddr,
 		ListenAddr:           cfg.listenAddr,
@@ -370,9 +352,11 @@ func runProxy(cfg proxyConfig) {
 		Color:                !cfg.noColor,
 		BackendTLS:           cfg.backendTLS,
 		BackendTLSSkipVerify: cfg.backendTLSSkip,
+		FrameSniffer:         h2snf,
 	}
-	// Guard against nil-interface-wrapping: a nil *metadata.Engine assigned to
-	// an interface field produces a non-nil interface value, which breaks nil checks.
+	// A nil *metadata.Engine assigned to an interface field produces a
+	// non-nil interface value, which breaks proxy's nil checks — so only
+	// assign it when there's a real engine.
 	if metaMut != nil {
 		proxyCfg.MetaMutator = metaMut
 	}
@@ -406,12 +390,28 @@ func runProxy(cfg proxyConfig) {
 		go cfg.onReady(lis.Addr().String())
 	}
 
-	if serveErr := srv.Serve(lis); serveErr != nil && serveErr != http.ErrServerClosed {
+	if serveErr := srv.Serve(h2snf.WrapListener(lis)); serveErr != nil && serveErr != http.ErrServerClosed {
 		log.Fatalf("Server: %v", serveErr)
 	}
 }
 
-// ── Replay ────────────────────────────────────────────────────────────────────
+func schemeFor(useTLS bool) string {
+	if useTLS {
+		return "https"
+	}
+	return "http"
+}
+
+func buildGRPCRequest(scheme, addr, method string, body io.Reader) (*http.Request, error) {
+	url := fmt.Sprintf("%s://%s%s", scheme, addr, method)
+	req, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/grpc")
+	req.Header.Set("TE", "trailers")
+	return req, nil
+}
 
 func runReplay(ndjsonPath, backendAddr string, useTLS bool) {
 	records, err := recorder.ReadNDJSON(ndjsonPath)
@@ -420,10 +420,9 @@ func runReplay(ndjsonPath, backendAddr string, useTLS bool) {
 	}
 	fmt.Printf("  Replaying %d call(s) → %s\n\n", len(records), backendAddr)
 
-	scheme := "http"
+	scheme := schemeFor(useTLS)
 	var transport http.RoundTripper
 	if useTLS {
-		scheme = "https"
 		transport = &http2.Transport{}
 	} else {
 		transport = &http2.Transport{
@@ -436,15 +435,11 @@ func runReplay(ndjsonPath, backendAddr string, useTLS bool) {
 
 	for i, call := range records {
 		fmt.Printf("  [%d/%d] %s", i+1, len(records), call.Method)
-		body := recorder.BuildRawBody(call.Request)
-		url := fmt.Sprintf("%s://%s%s", scheme, backendAddr, call.Method)
-		req, buildErr := http.NewRequest("POST", url, body)
+		req, buildErr := buildGRPCRequest(scheme, backendAddr, call.Method, recorder.BuildRawBody(call.Request))
 		if buildErr != nil {
 			fmt.Printf(" ✗ %v\n", buildErr)
 			continue
 		}
-		req.Header.Set("Content-Type", "application/grpc")
-		req.Header.Set("TE", "trailers")
 		resp, tripErr := transport.RoundTrip(req)
 		if tripErr != nil {
 			fmt.Printf(" ✗ %v\n", tripErr)
@@ -460,18 +455,10 @@ func runReplay(ndjsonPath, backendAddr string, useTLS bool) {
 }
 
 func replaySingleCall(call *recorder.CallRecord, proxyAddr string, useTLS bool) (string, error) {
-	scheme := "http"
-	if useTLS {
-		scheme = "https"
-	}
-	body := recorder.BuildRawBody(call.Request)
-	url := fmt.Sprintf("%s://%s%s", scheme, proxyAddr, call.Method)
-	req, err := http.NewRequest("POST", url, body)
+	req, err := buildGRPCRequest(schemeFor(useTLS), proxyAddr, call.Method, recorder.BuildRawBody(call.Request))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/grpc")
-	req.Header.Set("TE", "trailers")
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return "", err

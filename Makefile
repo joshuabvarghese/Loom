@@ -9,7 +9,11 @@ GOFLAGS    = -mod=vendor
 
 all: build build-testserver
 
-build:
+frontend:
+	cd webui && npm ci && npm run build
+	@echo "  ✓ internal/webui/dist"
+
+build: frontend
 	mkdir -p bin
 	go build $(GOFLAGS) -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
 	@echo "  ✓ $(BINARY)"
@@ -65,7 +69,8 @@ help:
 	@echo ""
 	@echo "  Loom — gRPC L7 Debugging Proxy"
 	@echo ""
-	@echo "  make build            build bin/loom"
+	@echo "  make frontend         build the React SPA into internal/webui/dist"
+	@echo "  make build            build the frontend, then bin/loom"
 	@echo "  make build-testserver build bin/testserver"
 	@echo "  make run-demo         build + start in demo mode"
 	@echo "  make run              build + start testserver + loom"
@@ -79,4 +84,4 @@ help:
 	@echo "  make vet              go vet"
 	@echo ""
 
-.PHONY: all build build-testserver run-demo run test test-race test-verbose smoke docker-build docker-demo vendor tidy clean fmt vet help
+.PHONY: all frontend build build-testserver run-demo run test test-race test-verbose smoke docker-build docker-demo vendor tidy clean fmt vet help
